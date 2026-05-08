@@ -991,13 +991,12 @@ fn setup_snapshot_settings_for_paths_with_home(
         "${1}[VERSION]",
     );
 
-    // Normalize project root paths in "Binary invoked as:" debug output
-    // Tests run cargo which produces paths like /path/to/worktrunk/target/debug/wt
-    // Normalize to [PROJECT_ROOT]/target/debug/wt for deterministic snapshots
-    settings.add_filter(
-        r"(Binary invoked as: \x1b\[1m)[^\x1b]+/target/(debug|release)/wt(\x1b\[22m)",
-        "${1}[PROJECT_ROOT]/target/$2/wt$3",
-    );
+    // Collapse build-mode (debug|release) so snapshots survive both cargo's
+    // debug builds and crane/release builds (notably the nightly nix-flake
+    // sandbox). The pattern is anchored on `/target/.../wt` so it matches
+    // the bin path in "Invoked as:" / "Binary invoked as:" / diagnostic
+    // hint output without touching unrelated `target/` paths.
+    settings.add_filter(r"/target/(debug|release)/wt", "/target/[BUILD_MODE]/wt");
 
     // Normalize shell probe binary paths
     // Shell probe reports the actual binary location which varies by system
@@ -1209,7 +1208,14 @@ pub fn add_pty_binary_path_filters(settings: &mut insta::Settings) {
     // cargo-affected (`affected/build/`, max-sixty/cargo-affected#12), and
     // cross-target builds (e.g. `target/x86_64-unknown-linux-musl/debug/wt`
     // from the nightly `release-target` matrix).
-    settings.add_filter(r"[^\s]+/target/(?:[^/\s]+/)*(?:debug|release)/wt", "[BIN]");
+    //
+    // Include the literal `[BUILD_MODE]` placeholder so this filter still
+    // collapses to `[BIN]` when the prelude's `target/(debug|release)/wt`
+    // → `target/[BUILD_MODE]/wt` rewrite has already run.
+    settings.add_filter(
+        r"[^\s]+/target/(?:[^/\s]+/)*(?:debug|release|\[BUILD_MODE\])/wt",
+        "[BIN]",
+    );
 }
 
 // =============================================================================
