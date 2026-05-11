@@ -1,6 +1,6 @@
 //! Unified PR/MR reference resolution.
 //!
-//! This module provides a trait-based architecture for resolving GitHub PRs and GitLab MRs
+//! This module provides a trait-based architecture for resolving GitHub/Gitea PRs and GitLab MRs
 //! to local branches. Both platforms follow the same workflow:
 //!
 //! 1. Parse `pr:<number>` or `mr:<number>` syntax
@@ -29,11 +29,20 @@
 //!
 //! Uses `glab api projects/:id/merge_requests/<number>`. Fork MRs require additional
 //! API calls to fetch source/target project URLs.
+//!
+//! ## Gitea (experimental)
+//!
+//! Uses `tea api repos/{owner}/{repo}/pulls/<number>`. Unlike `gh`, `tea`'s
+//! `{owner}`/`{repo}` template expansion depends on local repo context, so the
+//! provider resolves owner/repo from the primary remote URL and passes a
+//! pre-expanded path.
 
+pub mod gitea;
 pub mod github;
 pub mod gitlab;
 mod info;
 
+pub use gitea::GiteaProvider;
 pub use github::GitHubProvider;
 pub use gitlab::GitLabProvider;
 pub use info::{PlatformData, RemoteRefInfo};
@@ -42,7 +51,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Output;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 
 use crate::git::error::GitError;
 use crate::git::{RefType, Repository};
@@ -119,6 +128,19 @@ pub(super) fn cli_api_error(ref_type: RefType, message: String, output: &Output)
     .into()
 }
 
+/// Extract the host (e.g. `github.com`) from a PR/MR `html_url` returned by
+/// the forge API. Both GitHub and Gitea responses use the same `https://host/...`
+/// shape, so we share the parser.
+pub(super) fn extract_host_from_html_url(html_url: &str) -> anyhow::Result<String> {
+    html_url
+        .strip_prefix("https://")
+        .or_else(|| html_url.strip_prefix("http://"))
+        .and_then(|s| s.split('/').next())
+        .filter(|h| !h.is_empty())
+        .map(String::from)
+        .with_context(|| format!("Failed to parse host from PR URL: {html_url}"))
+}
+
 pub(super) fn cli_config_value(tool: &str, key: &str) -> Option<String> {
     Cmd::new(tool)
         .args(["config", "get", key])
@@ -141,6 +163,11 @@ pub fn find_remote(repo: &Repository, info: &RemoteRefInfo) -> Result<String, Gi
             base_repo,
             ..
         }
+        | PlatformData::Gitea {
+            base_owner,
+            base_repo,
+            ..
+        }
         | PlatformData::GitLab {
             base_owner,
             base_repo,
@@ -157,6 +184,12 @@ pub fn find_remote(repo: &Repository, info: &RemoteRefInfo) -> Result<String, Gi
                     base_repo,
                     ..
                 } => github::fork_remote_url(host, base_owner, base_repo),
+                PlatformData::Gitea {
+                    host,
+                    base_owner,
+                    base_repo,
+                    ..
+                } => gitea::fork_remote_url(host, base_owner, base_repo),
                 PlatformData::GitLab {
                     host,
                     base_owner,
@@ -206,6 +239,10 @@ mod tests {
         let gh = GitHubProvider;
         assert_eq!(gh.ref_path(123), "pull/123/head");
         assert_eq!(gh.tracking_ref(123), "refs/pull/123/head");
+
+        let ge = GiteaProvider;
+        assert_eq!(ge.ref_path(7), "pull/7/head");
+        assert_eq!(ge.tracking_ref(7), "refs/pull/7/head");
 
         let gl = GitLabProvider;
         assert_eq!(gl.ref_path(42), "merge-requests/42/head");

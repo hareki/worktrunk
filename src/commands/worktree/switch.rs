@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::display::format_relative_time_short;
-use anyhow::Context;
+use anyhow::{Context, bail};
 use color_print::cformat;
 use dunce::canonicalize;
 use serde::Serialize;
@@ -16,7 +16,7 @@ use worktrunk::config::{
     UserConfig, ValidationScope, expand_template, template_references_var, validate_template,
 };
 use worktrunk::git::remote_ref::{
-    self, GitHubProvider, GitLabProvider, RemoteRefInfo, RemoteRefProvider,
+    self, GitHubProvider, GitLabProvider, GiteaProvider, RemoteRefInfo, RemoteRefProvider,
 };
 use worktrunk::git::{
     GitError, RefContext, RefType, Repository, SwitchSuggestionCtx, current_or_recover,
@@ -71,6 +71,111 @@ fn format_ref_context(ctx: &impl RefContext) -> String {
         ctx.number(),
         ctx.url()
     )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PrProviderChoice {
+    GitHub,
+    Gitea,
+}
+
+/// Choose which provider should handle `pr:<number>` resolution.
+///
+/// Priority:
+/// 1. `forge.platform` config override
+/// 2. Primary remote URL detection (host contains `github`/`gitea`)
+/// 3. CLI auth lookup — if `tea` has a login for this host but `gh` does
+///    not, pick Gitea; otherwise default to GitHub
+///
+/// The default-to-GitHub fall-through means a self-hosted Gitea on a branded
+/// host (e.g. `git.example.com`) without `tea login add` will see a single
+/// GitHub error (with hint to set `forge.platform = "gitea"`), instead of a
+/// wrapped two-provider error.
+fn choose_pr_provider(repo: &Repository) -> anyhow::Result<PrProviderChoice> {
+    if let Some(platform_raw) = repo
+        .load_project_config()
+        .ok()
+        .flatten()
+        .and_then(|c| c.forge_platform().map(str::to_string))
+    {
+        let platform = platform_raw.to_ascii_lowercase();
+        match platform.as_str() {
+            "github" => return Ok(PrProviderChoice::GitHub),
+            "gitea" => return Ok(PrProviderChoice::Gitea),
+            "gitlab" => {
+                bail!("forge.platform is set to gitlab; use mr:<number> instead of pr:<number>")
+            }
+            _ => bail!(
+                "Invalid forge.platform value `{platform_raw}` in .config/wt.toml; \
+                 expected one of: github, gitea, gitlab"
+            ),
+        }
+    }
+
+    // Use the raw remote URL (not effective) — `insteadOf` rewrites are for
+    // git transport (e.g., redirecting fetches through a local mirror) and
+    // can produce a path that doesn't reflect the real forge host.
+    let detected = repo
+        .primary_remote()
+        .ok()
+        .and_then(|remote| repo.remote_url(&remote))
+        .and_then(|url| worktrunk::git::GitRemoteUrl::parse(&url));
+
+    let Some(parsed) = detected else {
+        return Ok(PrProviderChoice::GitHub);
+    };
+
+    if parsed.is_github() {
+        return Ok(PrProviderChoice::GitHub);
+    }
+    if parsed.is_gitlab() {
+        bail!("Detected GitLab remote; use mr:<number> instead of pr:<number>")
+    }
+    if parsed.is_gitea() {
+        return Ok(PrProviderChoice::Gitea);
+    }
+
+    // Self-hosted forge with a non-distinctive hostname. Ask the CLIs which
+    // one is configured for this host. If only `tea` has a login, pick Gitea;
+    // otherwise default to GitHub (the common case, and the one users get
+    // useful errors from when nothing is set up).
+    if remote_ref::gitea::is_authed_for(parsed.host())
+        && !remote_ref::github::is_authed_for(parsed.host())
+    {
+        Ok(PrProviderChoice::Gitea)
+    } else {
+        Ok(PrProviderChoice::GitHub)
+    }
+}
+
+fn resolve_pr_target(
+    repo: &Repository,
+    number: u32,
+    create: bool,
+    base: Option<&str>,
+) -> anyhow::Result<ResolvedTarget> {
+    if base.is_some() {
+        return Err(GitError::RefBaseConflict {
+            ref_type: RefType::Pr,
+            number,
+        }
+        .into());
+    }
+
+    match choose_pr_provider(repo)? {
+        PrProviderChoice::GitHub => resolve_remote_ref(repo, &GitHubProvider, number, create, base),
+        PrProviderChoice::Gitea => resolve_remote_ref(repo, &GiteaProvider, number, create, base),
+    }
+}
+
+fn resolve_pr_base(
+    repo: &Repository,
+    number: u32,
+) -> anyhow::Result<(String, Option<(String, String)>)> {
+    match choose_pr_provider(repo)? {
+        PrProviderChoice::GitHub => resolve_remote_ref_as_base(repo, &GitHubProvider, number),
+        PrProviderChoice::Gitea => resolve_remote_ref_as_base(repo, &GiteaProvider, number),
+    }
 }
 
 /// Resolve a remote ref (PR or MR) using the unified provider interface.
@@ -162,7 +267,7 @@ fn resolve_fork_ref(
             });
         }
 
-        // Branch exists but doesn't track this ref - try prefixed name (GitHub only)
+        // Branch exists but doesn't track this ref - try prefixed name (GitHub/Gitea)
         if let Some(prefixed) = info.prefixed_local_branch_name() {
             if let Some(prefixed_tracks) = remote_ref::branch_tracks_ref(
                 repo_root,
@@ -329,7 +434,7 @@ fn resolve_base_ref(
     if let Some(suffix) = base.strip_prefix("pr:")
         && let Ok(number) = suffix.parse::<u32>()
     {
-        return resolve_remote_ref_as_base(repo, &GitHubProvider, number);
+        return resolve_pr_base(repo, number);
     }
 
     if let Some(suffix) = base.strip_prefix("mr:")
@@ -408,7 +513,7 @@ fn resolve_switch_target(
     if let Some(suffix) = branch.strip_prefix("pr:")
         && let Ok(number) = suffix.parse::<u32>()
     {
-        return resolve_remote_ref(repo, &GitHubProvider, number, create, base);
+        return resolve_pr_target(repo, number, create, base);
     }
 
     // Handle mr:<number> syntax (GitLab MRs)
