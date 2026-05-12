@@ -450,11 +450,16 @@ pub fn configure_pty_command(cmd: &mut portable_pty::CommandBuilder) {
 /// (i.e. the repo root for tests that don't override it) instead of the path
 /// `cargo llvm-cov` chose. The non-PTY equivalent lives inside
 /// `worktrunk::testing::isolate_subprocess_env`; both paths share
-/// [`worktrunk::testing::COVERAGE_ENV_VARS`].
+/// [`worktrunk::testing::default_llvm_profile_file`] for the
+/// inherit-or-temp-dir resolution.
 ///
 /// Use `configure_pty_command()` for the full setup, or call this directly if you
 /// need custom env_clear handling (e.g., shell-specific env vars).
 pub fn pass_coverage_env_to_pty_cmd(cmd: &mut portable_pty::CommandBuilder) {
+    cmd.env(
+        "LLVM_PROFILE_FILE",
+        worktrunk::testing::default_llvm_profile_file(),
+    );
     for key in worktrunk::testing::COVERAGE_ENV_VARS {
         if let Ok(val) = std::env::var(key) {
             cmd.env(key, val);
