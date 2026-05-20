@@ -70,8 +70,8 @@ use cli::{
     ConfigPluginsClaudeCommand, ConfigPluginsCodexCommand, ConfigPluginsCommand,
     ConfigPluginsOpencodeCommand, ConfigShellCommand, DefaultBranchAction, HintsAction,
     HookCommand, HookOptions, ListArgs, ListSubcommand, LogsAction, MarkerAction, MergeArgs,
-    PreviousBranchAction, RemoveArgs, StateCommand, StepCommand, SwitchArgs, SwitchFormat,
-    VarsAction,
+    PreviousBranchAction, RemoveArgs, StateCommand, StateWrite, StepCommand, SwitchArgs,
+    SwitchFormat, VarsAction,
 };
 
 /// Render a clap error to stderr, appending a wt-specific nested-subcommand
@@ -416,7 +416,7 @@ fn handle_step_command(action: StepCommand, yes: bool) -> anyhow::Result<()> {
     }
 }
 
-/// Exit with a clap-style `ArgumentConflict` error when `--format` is combined
+/// Return a clap-style `ArgumentConflict` error when `--format` is combined
 /// with a write action (set/clear) on the state subcommands where it has no
 /// effect. Clap accepts the flag because `--format` is declared `global = true`
 /// on the parent so the bareword and `get` forms work, but write actions don't
@@ -425,9 +425,9 @@ fn handle_step_command(action: StepCommand, yes: bool) -> anyhow::Result<()> {
 /// Populates `InvalidArg` / `PriorArg` context rather than passing a raw
 /// message so clap renders the arg name and subcommand with its own `invalid`
 /// style, matching native conflict errors byte-for-byte.
-fn guard_format_on_write(action_name: &str, format: SwitchFormat) {
+fn guard_format_on_write(action_name: &str, format: SwitchFormat) -> anyhow::Result<()> {
     if format == SwitchFormat::Text {
-        return;
+        return Ok(());
     }
     let mut cmd = cli::build_command();
     let usage = cmd.render_usage();
@@ -444,7 +444,7 @@ fn guard_format_on_write(action_name: &str, format: SwitchFormat) {
         clap::error::ContextKind::Usage,
         clap::error::ContextValue::StyledStr(usage),
     );
-    err.exit()
+    Err(enhance_clap_error(err))
 }
 
 fn handle_state_command(action: StateCommand) -> anyhow::Result<()> {
@@ -467,40 +467,53 @@ fn handle_state_command(action: StateCommand) -> anyhow::Result<()> {
             }
             Some(PreviousBranchAction::Clear) => handle_state_clear("previous-branch", None, false),
         },
-        StateCommand::CiStatus { action, format } => match action {
-            Some(CiStatusAction::Get { branch }) => handle_state_get("ci-status", branch, format),
-            None => handle_state_get("ci-status", None, format),
-            Some(CiStatusAction::Clear { branch, all }) => {
-                guard_format_on_write("clear", format);
-                handle_state_clear("ci-status", branch, all)
+        StateCommand::CiStatus { action, format } => {
+            if let Some(verb) = action.as_ref().and_then(StateWrite::write_verb) {
+                guard_format_on_write(verb, format)?;
             }
-        },
-        StateCommand::Marker { action, format } => match action {
-            Some(MarkerAction::Get { branch }) => handle_state_get("marker", branch, format),
-            None => handle_state_get("marker", None, format),
-            Some(MarkerAction::Set { value, branch }) => {
-                guard_format_on_write("set", format);
-                handle_state_set("marker", value, branch)
+            match action {
+                Some(CiStatusAction::Get { branch }) => {
+                    handle_state_get("ci-status", branch, format)
+                }
+                None => handle_state_get("ci-status", None, format),
+                Some(CiStatusAction::Clear { branch, all }) => {
+                    handle_state_clear("ci-status", branch, all)
+                }
             }
-            Some(MarkerAction::Clear { branch, all }) => {
-                guard_format_on_write("clear", format);
-                handle_state_clear("marker", branch, all)
+        }
+        StateCommand::Marker { action, format } => {
+            if let Some(verb) = action.as_ref().and_then(StateWrite::write_verb) {
+                guard_format_on_write(verb, format)?;
             }
-        },
-        StateCommand::Logs { action, format } => match action {
-            Some(LogsAction::Get) | None => handle_logs_list(format),
-            Some(LogsAction::Clear) => {
-                guard_format_on_write("clear", format);
-                handle_state_clear("logs", None, false)
+            match action {
+                Some(MarkerAction::Get { branch }) => handle_state_get("marker", branch, format),
+                None => handle_state_get("marker", None, format),
+                Some(MarkerAction::Set { value, branch }) => {
+                    handle_state_set("marker", value, branch)
+                }
+                Some(MarkerAction::Clear { branch, all }) => {
+                    handle_state_clear("marker", branch, all)
+                }
             }
-        },
-        StateCommand::Hints { action, format } => match action {
-            Some(HintsAction::Get) | None => handle_hints_get(format),
-            Some(HintsAction::Clear { name }) => {
-                guard_format_on_write("clear", format);
-                handle_hints_clear(name)
+        }
+        StateCommand::Logs { action, format } => {
+            if let Some(verb) = action.as_ref().and_then(StateWrite::write_verb) {
+                guard_format_on_write(verb, format)?;
             }
-        },
+            match action {
+                Some(LogsAction::Get) | None => handle_logs_list(format),
+                Some(LogsAction::Clear) => handle_state_clear("logs", None, false),
+            }
+        }
+        StateCommand::Hints { action, format } => {
+            if let Some(verb) = action.as_ref().and_then(StateWrite::write_verb) {
+                guard_format_on_write(verb, format)?;
+            }
+            match action {
+                Some(HintsAction::Get) | None => handle_hints_get(format),
+                Some(HintsAction::Clear { name }) => handle_hints_clear(name),
+            }
+        }
         StateCommand::Vars { action } => match action {
             VarsAction::Get { key, branch } => handle_vars_get(&key, branch),
             VarsAction::Set {
@@ -1595,7 +1608,10 @@ fn main() {
     // on-demand callers unchanged.
     Repository::prewarm();
 
-    let command_line = std::env::args().collect::<Vec<_>>().join(" ");
+    let command_line = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
     {
         let _span = worktrunk::trace::Span::new("init_command_log");
         init_command_log(&command_line);
