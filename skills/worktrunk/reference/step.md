@@ -156,11 +156,8 @@ Automation:
 
           JSON prints structured result to stdout after the commit completes.
 
-          Possible values:
-          - text: Human-readable text output
-          - json: JSON output
-
           [default: text]
+          [possible values: text, json]
 
 Global Options:
   -C <path>
@@ -255,11 +252,8 @@ Automation:
 
           JSON prints structured result to stdout after the squash completes.
 
-          Possible values:
-          - text: Human-readable text output
-          - json: JSON output
-
           [default: text]
+          [possible values: text, json]
 
 Global Options:
   -C <path>
@@ -492,11 +486,8 @@ Automation:
 
           JSON prints structured result to stdout after the copy completes.
 
-          Possible values:
-          - text: Human-readable text output
-          - json: JSON output
-
           [default: text]
+          [possible values: text, json]
 
 Global Options:
   -C <path>
@@ -672,11 +663,8 @@ Options:
       --format <FORMAT>
           Output format (text, json)
 
-          Possible values:
-          - text: Human-readable text output
-          - json: JSON output
-
           [default: text]
+          [possible values: text, json]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -833,11 +821,8 @@ Options:
       --format <FORMAT>
           Output format (text, json)
 
-          Possible values:
-          - text: Human-readable text output
-          - json: JSON output
-
           [default: text]
+          [possible values: text, json]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -952,11 +937,8 @@ Automation:
 
           JSON prints structured result to stdout after the relocate completes.
 
-          Possible values:
-          - text: Human-readable text output
-          - json: JSON output
-
           [default: text]
+          [possible values: text, json]
 
 Global Options:
   -C <path>
