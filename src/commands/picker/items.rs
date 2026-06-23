@@ -373,11 +373,15 @@ pub(super) fn render_preview_tabs(mode: PreviewMode, avail: TabAvailability) -> 
     let tab5 = format_tab(5, "summary", mode == PreviewMode::Summary, avail.summary);
     let tab6 = format_tab(6, "pr", mode == PreviewMode::Pr, avail.pr);
 
-    // Controls use dim yellow to distinguish from dimmed (white) tabs.
-    // The tab numbers above are the alt-N accelerators (bare digits type
-    // into the query); Tab/shift-tab cycle the same tabs.
+    // Controls use plain yellow to distinguish from the dimmed (white) tabs.
+    // Dropped the `dim` modifier from the old `<dim,yellow>` pair: `dim` muddied
+    // terminal yellow into a non-palette tan. Plain `<yellow>` follows the
+    // terminal palette (catppuccin mocha Yellow #f9e2af on a mocha terminal),
+    // matching how the rest of the picker uses semantic ANSI colors. The tab
+    // numbers above are the alt-N accelerators (bare digits type into the
+    // query); Tab/shift-tab cycle the same tabs.
     let controls = cformat!(
-        "<dim,yellow>Enter: switch | Tab/alt-1…6: preview | alt-c: create | Esc: cancel | ctrl-u/d: scroll | alt-p: toggle</>"
+        "<yellow>Enter: switch | Tab/alt-1…6: preview | alt-c: create | Esc: cancel | ctrl-u/d: scroll | alt-p: toggle</>"
     );
 
     // End each tab and controls with full reset to prevent style bleeding
