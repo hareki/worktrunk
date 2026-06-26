@@ -505,16 +505,21 @@ mod tests {
 
     /// Build a handler with explicit `repo` (the per-spawn inventory source)
     /// and `orchestrator` (preview compute). Diverging the two lets a test
-    /// prove which one `on_skeleton`'s inventory reads consult.
+    /// prove which one `on_skeleton`'s inventory reads consult. `render_tx` is
+    /// shared with the orchestrator's notifier (as `handle_picker` shares it),
+    /// so a test can publish a channel into it and observe both the list redraw
+    /// (`Event::Render`, via `request_render`) and the notifier's
+    /// `Event::RunPreview`.
     fn handler_with(
         repo: Repository,
         orchestrator: Arc<PreviewOrchestrator>,
         tx: SkimItemSender,
+        render_tx: Arc<OnceLock<tokio::sync::mpsc::Sender<Event>>>,
     ) -> PickerHandler {
         let preview_cache: PreviewCache = Arc::clone(&orchestrator.cache);
         PickerHandler {
             tx,
-            render_tx: Arc::new(OnceLock::new()),
+            render_tx,
             last_render_poke: Mutex::new(Instant::now()),
             shared_items: Arc::new(Mutex::new(Vec::new())),
             shortcut_table: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -538,11 +543,16 @@ mod tests {
     fn make_handler() -> (PickerHandler, TestRepo, SkimItemReceiver) {
         let test = TestRepo::with_initial_commit();
         let (tx, rx): (SkimItemSender, SkimItemReceiver) = unbounded();
+        // Share one `render_tx` between the orchestrator's notifier and the
+        // handler, as `handle_picker` does — so a test can publish a channel into
+        // `handler.render_tx` and observe both the list redraw and the notifier's
+        // `Event::RunPreview` on it.
+        let render_tx: Arc<OnceLock<tokio::sync::mpsc::Sender<Event>>> = Arc::new(OnceLock::new());
         let orchestrator = Arc::new(PreviewOrchestrator::new(
             test.repo.clone(),
-            Arc::new(OnceLock::new()),
+            Arc::clone(&render_tx),
         ));
-        let handler = handler_with(test.repo.clone(), orchestrator, tx);
+        let handler = handler_with(test.repo.clone(), orchestrator, tx, render_tx);
         (handler, test, rx)
     }
 
@@ -575,7 +585,12 @@ mod tests {
             orchestrator_repo.repo.clone(),
             Arc::new(OnceLock::new()),
         ));
-        let handler = handler_with(self_repo.repo.clone(), orchestrator, tx);
+        let handler = handler_with(
+            self_repo.repo.clone(),
+            orchestrator,
+            tx,
+            Arc::new(OnceLock::new()),
+        );
 
         // A worktree row under the handler-repo's tree. The shared parent strips
         // only if path_base comes from self_repo (parent of `<temp>/repo`), not
@@ -679,6 +694,75 @@ mod tests {
         handler.on_reveal(vec!["rev-one".into(), "rev-two".into()]);
         assert_eq!(*slots[0].lock().unwrap(), "rev-one");
         assert_eq!(*slots[1].lock().unwrap(), "rev-two");
+    }
+
+    /// `on_update` mirrors a row's live CI status into the preview-feeding slots,
+    /// then pokes `Event::RunPreview` so the selected row's `pr` / `comments` tab
+    /// re-renders from the new status without a keystroke. This is the loop the
+    /// orchestrator-fill path can't close — `on_update` isn't a cache fill, so it
+    /// can't ride `PreviewOrchestrator::fill`'s notify; the poke is wired
+    /// separately here. Scoped to the selected row: an update for a row the
+    /// cursor isn't on repaints the list (`Event::Render`) but must not re-run
+    /// the visible preview. Fast producer-site guard for that wiring; the
+    /// end-to-end path is also covered by the PTY test
+    /// `test_switch_picker_pr_tab_auto_resolves_from_fetching`.
+    #[test]
+    fn on_update_pokes_run_preview_for_the_selected_row() {
+        let (handler, _test, rx) = make_handler();
+        // Publish skim's event sender (shared with the orchestrator's notifier,
+        // as in production) so both the list redraw and the preview re-run land
+        // on this channel.
+        let (tx, mut render_rx) = tokio::sync::mpsc::channel::<Event>(8);
+        handler.render_tx.set(tx).unwrap();
+
+        handler.on_skeleton(
+            vec![ListItem::new_branch("aaa".into(), "feature".into())],
+            vec!["s".into()],
+            header("hdr"),
+            grid(),
+        );
+        let _ = rx.recv(); // drain the skeleton batch
+
+        // A live-status change for the row: CI reported "no PR".
+        let mut updated = ListItem::new_branch("aaa".into(), "feature".into());
+        updated.pr_status = Some(None);
+
+        let run_previews = |rx: &mut tokio::sync::mpsc::Receiver<Event>| {
+            let mut n = 0;
+            while let Ok(ev) = rx.try_recv() {
+                if matches!(ev, Event::RunPreview) {
+                    n += 1;
+                }
+            }
+            n
+        };
+
+        // Cursor is on `feature`'s `pr` tab (still loading) → its CI update
+        // re-runs the preview.
+        handler
+            .orchestrator
+            .notifier()
+            .note_awaiting("feature", PreviewMode::Pr);
+        handler.on_update(0, "r".into(), &updated);
+        assert!(
+            run_previews(&mut render_rx) >= 1,
+            "the selected row's CI update re-runs its preview"
+        );
+
+        // Cursor is on a different row → `feature`'s update must not re-run the
+        // preview the cursor is showing (no thrash). `request_render`'s throttle
+        // may swallow the `Event::Render` too, but the `RunPreview` poke is
+        // unthrottled, so its absence is the meaningful signal.
+        handler
+            .orchestrator
+            .notifier()
+            .note_awaiting("other", PreviewMode::Pr);
+        handler.on_update(0, "r".into(), &updated);
+        assert_eq!(
+            run_previews(&mut render_rx),
+            0,
+            "an update to a row the cursor isn't on doesn't re-run the visible preview"
+        );
     }
 
     /// A row's `comments` fetch is once-per-PR, keyed by branch name — but if the
