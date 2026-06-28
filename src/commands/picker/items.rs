@@ -554,10 +554,11 @@ pub(super) fn pr_presence(pr_status: &Option<Option<PrStatus>>) -> PrPresence {
 }
 
 /// Whether two live `pr_status` slot values render the *same* `pr` pane. Equal
-/// under the `PrStatus` derive means identical; the only field the pane ignores
-/// is `is_priming` — a list-cell dim hint [`render_pr_pane_body`] never reads —
-/// so a cache-prime→live flip that merely clears it is not a pane change and
-/// must not re-run the preview (which would reset its scroll). Every other field
+/// under the `PrStatus` derive means identical; the pane ignores two fields —
+/// `is_priming` (a list-cell dim hint [`render_pr_pane_body`] never reads) and
+/// `updated_at` (the comments-cache key, also never shown in the pane) — so a
+/// cache-prime→live flip that only changes those is not a pane change and must
+/// not re-run the preview (which would reset its scroll). Every other field
 /// (CI badge, title, body, review, comment count, …) shows in the pane, so any
 /// of them differing is a real change. The lone change-path clone keeps the
 /// no-change case (the common repeated `on_update`) allocation-free.
@@ -570,6 +571,7 @@ pub(super) fn pr_status_pane_eq(
             x == y
                 || PrStatus {
                     is_priming: y.is_priming,
+                    updated_at: y.updated_at.clone(),
                     ..x.clone()
                 } == *y
         }
@@ -2178,6 +2180,7 @@ mod tests {
             body: None,
             author: None,
             comment_count: None,
+            updated_at: None,
         };
         let with_url: PrStatusSlot = Arc::new(Mutex::new(Some(Some(status))));
         assert_eq!(
@@ -2205,6 +2208,7 @@ mod tests {
             body: body.map(String::from),
             author: None,
             comment_count: None,
+            updated_at: None,
         };
         // Build a row whose live `pr_status` slot carries a given state — what
         // the picker primes from the cache and then overwrites as the fetch lands.
@@ -2305,6 +2309,7 @@ mod tests {
                 body: None,
                 author: None,
                 comment_count: None,
+                updated_at: None,
             }))
         };
         let row = |slot: Option<Option<PrStatus>>, cache: PreviewCache| {
@@ -2363,6 +2368,7 @@ mod tests {
             body: None,
             author: None,
             comment_count,
+            updated_at: None,
         };
 
         // A PR with comments adds a cyan all-caps `COMMENTS` metadata line
@@ -2406,6 +2412,7 @@ mod tests {
             body: None,
             author: author.map(str::to_owned),
             comment_count: None,
+            updated_at: None,
         };
 
         let with = render_pr_pane_body("feature", PrRef::pr(7), &status(Some("bob")), 80)
@@ -2446,6 +2453,7 @@ mod tests {
                 body: Some("Adds a **bounded** retry.".into()),
                 author: None,
                 comment_count: None,
+                updated_at: None,
             })),
         );
 
@@ -2513,6 +2521,7 @@ mod tests {
                 body: Some("body".into()),
                 author: None,
                 comment_count: None,
+                updated_at: None,
             }))
         };
         // Share the cache and slot Arcs so the test can mutate the slot and
