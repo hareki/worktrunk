@@ -1939,10 +1939,11 @@ summary = true
             RankCriteria::End,
         ])
         // Fill the whole selected row with the `current` background (set via
-        // `current_bg` in `.color(...)` below). skim 4.x applies the current-row
-        // style at the line level only when this is on; without it the selection
-        // shows just the `>` pointer (the row's own `display()` ANSI spans carry
-        // no background). skim 0.20's tuikit backend highlighted the row for free.
+        // the `catppuccin-mocha` theme's `current.bg(surface0)` in `.color(...)`
+        // below). skim 4.x applies the current-row style at the line level only
+        // when this is on; without it the selection shows just the `>` pointer
+        // (the row's own `display()` ANSI spans carry no background). skim 0.20's
+        // tuikit backend highlighted the row for free.
         .highlight_line(true)
         // Each row's `display()` owns its layout: a leading gutter sigil
         // (`+`/`@`/`^`/`/`/`|`), then columns, right-truncated to the list width
@@ -1985,20 +1986,14 @@ summary = true
         .no_info(true) // Hide info line (matched/total counter)
         .preview("") // Enable preview (empty string means use SkimItem::preview())
         .preview_window(preview_window_spec.as_str())
-        // Color scheme using fzf's --color=light values: dark text (237) on light gray bg (251)
-        //
-        // Terminal color compatibility is tricky:
-        // - current_bg:254 (original): too bright on dark terminals, washes out text
-        // - current_bg:236 (fzf dark): too dark on light terminals, jarring contrast
-        // - current_bg:251 + current:-1: light bg works on both, but unstyled text
-        //   becomes unreadable on dark terminals (light-on-light)
-        // - current_bg:251 + current:237: fzf's light theme, best compromise
-        //
-        // The light theme works universally because:
-        // - On dark terminals: light gray highlight stands out clearly
-        // - On light terminals: light gray is subtle but visible
-        // - Dark text (237) ensures readability regardless of terminal theme
-        .color("fg:-1,bg:-1,header:-1,matched:108,current:237,current_bg:251,current_match:108")
+        // Hardcoded to skim 5.1's built-in `catppuccin-mocha` theme (true-color
+        // RGB, see skim's `theme.rs::catppuccin_mocha`): selected row gets a dark
+        // `surface0` background with no fg override (each row keeps its own ANSI
+        // spans), matched chars are blue+underlined, the prompt is lavender. We
+        // deliberately do not expose this as config: the row/preview content uses
+        // semantic ANSI colors that already follow the terminal's palette, so only
+        // skim's own chrome is pinned here.
+        .color("catppuccin-mocha")
         .cmd_collector(Rc::new(RefCell::new(collector)) as Rc<RefCell<dyn CommandCollector>>)
         .bind(vec![
             // Preview-tab switching (alt-1..alt-7 jump to a tab; tab / shift-tab

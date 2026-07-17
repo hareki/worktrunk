@@ -975,9 +975,17 @@ pub(super) fn render_preview_tabs(
         render_tab_row_compact(&tabs, reset)
     };
 
-    // Controls use dim cyan to distinguish from the dimmed (white) tabs above.
-    // The tab numbers above are the alt-N accelerators (bare digits type
-    // into the query); Tab/shift-tab cycle the same tabs.
+    // Controls use plain cyan to distinguish from the dimmed (white) tabs above.
+    // Dropped the `dim` modifier from the old `<dim,cyan>` pair: `dim` muddied
+    // terminal cyan into a non-palette shade. Plain `<cyan>` follows the terminal
+    // palette (catppuccin mocha's Teal on a mocha terminal), matching how the
+    // rest of the picker uses semantic ANSI colors. The tab numbers above are the
+    // alt-N accelerators (bare digits type into the query); Tab/shift-tab cycle
+    // the same tabs.
+    //
+    // FORK NOTE: dropping `dim` here makes `test_render_preview_tabs` fail on
+    // purpose (its `.snap` files were intentionally left stale). See the FORK
+    // NOTE on that test before touching the snapshots.
     //
     // Order: primary action (Enter), preview navigation (ctrl-u/d scroll, then
     // the Tab/alt-1…7 accelerators), then row actions, with Esc last.
@@ -989,12 +997,12 @@ pub(super) fn render_preview_tabs(
     // managed) tab bar above — so on a narrow pane the only on-screen reminder of
     // them can clip away.
     let controls = cformat!(
-        "<dim,cyan>Enter: switch | ctrl-u/d: scroll | Tab/alt-1…7: preview | alt-c: create | alt-x: remove | alt-y: copy | alt-o: open | alt-r: refresh | alt-p: toggle | Esc: cancel</>"
+        "<cyan>Enter: switch | ctrl-u/d: scroll | Tab/alt-1…7: preview | alt-c: create | alt-x: remove | alt-y: copy | alt-o: open | alt-r: refresh | alt-p: toggle | Esc: cancel</>"
     );
 
     // Each tab/segment already ends with a full reset (so styling never bleeds
     // into the dividers or preview content); `{reset}` here only closes the
-    // controls line's dim-cyan span.
+    // controls line's cyan span.
     format!("{bar}\n{controls}{reset}\n\n")
 }
 
@@ -1903,6 +1911,16 @@ mod tests {
 
     #[test]
     fn test_render_preview_tabs() {
+        // FORK NOTE: this test currently FAILS on purpose, and that is expected.
+        // The control-hint line in `render_preview_tabs` dropped the `dim`
+        // modifier (`<dim,cyan>` => `<cyan>`), a fork-local UI tweak, but the
+        // checked-in `.snap` files were deliberately NOT regenerated. Regenerating
+        // them re-introduces the recurring merge-conflict churn against upstream
+        // that motivated leaving them alone. So the controls row here reports a
+        // diff (the snapshot still carries the `[2m` dim code we removed). Do NOT
+        // "fix" it with `cargo insta accept` unless you intend to carry snapshot
+        // changes in this fork again.
+        //
         // Each mode active, on a worktree row whose diffs all have content
         // (uncommitted changes, commits ahead, diverged from upstream) with
         // summaries enabled but no PR (tabs 1-5 available; tabs 6 pr and 7
