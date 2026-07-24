@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use color_print::cformat;
 use worktrunk::git::{IntegrationReason, IntegrationSignals, LineDiff, check_integration};
 
 use super::state::{ActiveGitOperation, Divergence, MainState, OperationState, WorktreeState};
@@ -12,6 +13,7 @@ use super::stats::{AheadBehind, BranchDiffTotals, CommitDetails, UpstreamStatus}
 use super::status_symbols::{StatusSymbols, WorkingTreeStatus};
 use crate::commands::list::ci_status::PrStatus;
 use crate::commands::list::columns::ColumnKind;
+use crate::commands::list::layout::format_url_cell;
 
 /// Compute the `WorktreeState` from `WorktreeData` metadata alone.
 ///
@@ -464,31 +466,26 @@ impl ListItem {
         self.is_potentially_removable() == Some(true)
     }
 
-    /// Format this item as a single-line statusline string with clickable links.
+    /// Format this item as a single-line statusline string.
     ///
-    /// Format: `branch  status  @working  commits  ^branch_diff  upstream  ci`
+    /// Format: `branch  status  @working  commits  ^branch_diff  upstream  ci  url`
     /// Uses 2-space separators between non-empty parts.
     pub fn format_statusline(&self) -> String {
-        self.format_statusline_with_options(true)
-    }
-
-    /// Format this item as a single-line statusline string with link control.
-    ///
-    /// When `include_links` is false, CI indicators are colored but not clickable.
-    /// Used for environments that don't support OSC 8 hyperlinks (e.g., Claude Code).
-    pub fn format_statusline_with_options(&self, include_links: bool) -> String {
         use super::statusline_segment::StatuslineSegment;
-        StatuslineSegment::join(&self.format_statusline_segments(include_links))
+        StatuslineSegment::join(&self.format_statusline_segments())
     }
 
     /// Format this item as prioritized segments for smart truncation.
     ///
     /// Returns segments with priorities matching `wt list` column priorities.
     /// Use [`super::statusline_segment::StatuslineSegment::fit_to_width`] to truncate intelligently.
-    pub fn format_statusline_segments(
-        &self,
-        include_links: bool,
-    ) -> Vec<super::statusline_segment::StatuslineSegment> {
+    ///
+    /// The CI reference and the dev-server port always carry their OSC 8 link:
+    /// a terminal without OSC 8 discards the escape and renders the same text,
+    /// and the alternative rendering `wt list` uses when links are unavailable
+    /// (the URL in full) would outgrow this line's budget. See
+    /// [`format_url_cell`].
+    pub fn format_statusline_segments(&self) -> Vec<super::statusline_segment::StatuslineSegment> {
         use super::statusline_segment::StatuslineSegment;
 
         let mut segments = Vec::new();
@@ -529,7 +526,7 @@ impl ListItem {
             ));
         }
 
-        // 5. Branch diff vs main (priority 5)
+        // 5. Branch diff vs main (priority 6)
         if let Some(branch_diff) = self.branch_diff()
             && !branch_diff.diff.is_empty()
             && let Some(formatted) = ColumnKind::BranchDiff
@@ -541,7 +538,7 @@ impl ListItem {
             ));
         }
 
-        // 6. Upstream status (priority 7)
+        // 6. Upstream status (priority 8)
         if let Some(ref upstream) = self.upstream
             && let Some(active) = upstream.active()
             && let Some(formatted) =
@@ -553,18 +550,27 @@ impl ListItem {
             ));
         }
 
-        // 7. CI status (priority 9) — PR/MR reference when one exists,
+        // 7. CI status (priority 5) — PR/MR reference when one exists,
         // bare `#` otherwise (no width cap in the statusline)
         if let Some(Some(ref pr_status)) = self.pr_status {
             segments.push(StatuslineSegment::from_column(
-                pr_status.format_cell(usize::MAX, include_links),
+                pr_status.format_cell(usize::MAX, true),
                 ColumnKind::CiStatus,
             ));
         }
 
-        // 8. URL (priority 8)
+        // 8. URL (priority 9) — the dev server, as in `wt list`: the port as a
+        // link, dimmed unless the health check found something listening on it.
         if let Some(ref url) = self.url {
-            segments.push(StatuslineSegment::from_column(url.clone(), ColumnKind::Url));
+            let cell = format_url_cell(url, true);
+            segments.push(StatuslineSegment::from_column(
+                if self.url_active == Some(true) {
+                    cell
+                } else {
+                    cformat!("<dim>{cell}</>")
+                },
+                ColumnKind::Url,
+            ));
         }
 
         segments
@@ -887,6 +893,68 @@ mod tests {
     fn test_list_item_head() {
         let item = ListItem::new_branch("abc123def".to_string(), "feature".to_string());
         assert_eq!(item.head(), "abc123def");
+    }
+
+    /// The statusline links its CI segment to the PR, and the hidden URL costs
+    /// no visible width — segment priorities budget by rendered columns, so a
+    /// URL counted as width would truncate the line early.
+    #[test]
+    fn test_statusline_ci_segment_links_without_width_cost() {
+        use crate::commands::list::ci_status::{CiSource, CiStatus, PrRef};
+
+        let mut item = ListItem::new_branch("abc123".to_string(), "feature".to_string());
+        item.pr_status = Some(Some(PrStatus {
+            ci_status: CiStatus::Passed,
+            source: CiSource::PullRequest,
+            is_stale: false,
+            is_priming: false,
+            url: Some("https://github.com/owner/repo/pull/123".to_string()),
+            number: Some(PrRef::pr(123)),
+            review_state: None,
+            title: None,
+            body: None,
+            author: None,
+            comment_count: None,
+            updated_at: None,
+        }));
+
+        let ci = item
+            .format_statusline_segments()
+            .into_iter()
+            .find(|s| s.kind == Some(ColumnKind::CiStatus))
+            .expect("CI segment present when a PR is known");
+
+        assert!(
+            ci.content
+                .contains("\x1b]8;;https://github.com/owner/repo/pull/123"),
+            "CI segment should carry an OSC 8 link, got {:?}",
+            ci.content
+        );
+        assert_eq!(ci.width(), "#123".len());
+    }
+
+    /// A URL nothing answers on is dim, as in `wt list` — the port is still
+    /// worth showing, but it isn't somewhere to go yet.
+    #[test]
+    fn test_statusline_url_segment_dims_until_the_port_answers() {
+        let mut item = ListItem::new_branch("abc123".to_string(), "feature".to_string());
+        item.url = Some("http://127.0.0.1:17913".to_string());
+
+        let url_cell = |active| {
+            let mut item = item.clone();
+            item.url_active = active;
+            item.format_statusline_segments()
+                .into_iter()
+                .find(|s| s.kind == Some(ColumnKind::Url))
+                .expect("URL segment present when a URL is known")
+                .content
+        };
+
+        let plain = format_url_cell("http://127.0.0.1:17913", true);
+        let dim = cformat!("<dim>{plain}</>");
+        assert_eq!(url_cell(Some(false)), dim, "a dead port should dim");
+        assert_eq!(url_cell(None), dim, "an unfinished health check should dim");
+        assert_eq!(url_cell(Some(true)), plain, "a live port should not dim");
     }
 
     #[test]

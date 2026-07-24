@@ -160,7 +160,7 @@
 //! // Allocate columns in priority order, building pending list
 //! for candidate in candidates {
 //!     if candidate.spec.kind == ColumnKind::Message {
-//!         // Special handling: flexible width (min 20, preferred 50)
+//!         // Special handling: flexible width (min 10, max 100)
 //!     } else if let Some(ideal) = candidate.spec.kind.ideal(...) {
 //!         if let allocated = try_allocate(&mut remaining, ideal.width, ...) {
 //!             pending.push(PendingColumn { spec: candidate.spec, width: allocated, format: ideal.format });
@@ -597,6 +597,34 @@ struct PendingColumn<'a> {
     priority: u8,
     width: usize,
     format: ColumnFormat,
+}
+
+/// Format the dev-server URL, optionally as an OSC 8 hyperlink.
+///
+/// A linked cell shows just the port (e.g. `:3000`) — the URL rides inside the
+/// escape sequence, so the cell costs the port's width rather than the whole
+/// URL's. Without links, or when the URL carries no parseable port, there is
+/// nowhere to hide the URL, so it renders in full and stays copyable.
+///
+/// `wt list` passes the terminal probe, because there the answer changes what
+/// the reader gets: [`estimate_url_width`] reserves a column wide enough for the
+/// full URL, so an unlinked cell can print it (the two have to agree on when a
+/// cell collapses to `:port`, hence the adjacency). The statusline passes
+/// `true`. It has no column to reserve — it fits a fixed-width line by dropping
+/// its worst-priority segment, and the URL is the worst — so an unlinked cell
+/// would grow past the budget and be dropped entirely, trading a port for
+/// nothing. A terminal that doesn't implement OSC 8 discards the escape and
+/// renders the same `:3000`, so emitting it unconditionally costs that reader
+/// nothing.
+pub(crate) fn format_url_cell(url: &str, include_link: bool) -> String {
+    if include_link && let Some(port) = parse_port_from_url(url) {
+        return format!(
+            "{}:{port}{}",
+            osc8::Hyperlink::new(url),
+            osc8::Hyperlink::END
+        );
+    }
+    url.to_string()
 }
 
 /// Estimate URL column width using heuristics.
@@ -1048,7 +1076,7 @@ fn allocate_columns_with_priority(
 /// - Age: 4 chars ("11mo" short format)
 /// - CI: sized from `max_pr_number` (the cached largest PR/MR number seen,
 ///   e.g. "#3035"); 5 chars ("#9999") before the first fetch populates it
-/// - Message: flexible (20-100 chars)
+/// - Message: flexible (10-100 chars)
 /// - URL: estimated from template + longest branch
 pub fn calculate_layout_with_width(
     items: &[super::model::ListItem],
