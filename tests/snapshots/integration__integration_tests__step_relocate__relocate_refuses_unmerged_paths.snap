@@ -1,10 +1,11 @@
 ---
-source: tests/integration_tests/switch.rs
+source: tests/integration_tests/step_relocate.rs
 info:
   program: wt
   args:
-    - switch
-    - "pr:101"
+    - step
+    - relocate
+    - "--commit"
   env:
     APPDATA: "[TEST_CONFIG_HOME]"
     CLAUDE_CONFIG_DIR: "[TEST_CLAUDE_CONFIG]"
@@ -43,10 +44,12 @@ info:
     WORKTRUNK_TEST_ZSH_INSTALLED: "0"
     XDG_CONFIG_HOME: "[TEST_CONFIG_HOME]"
 ---
-success: false
-exit_code: 1
+success: true
+exit_code: 0
 ----- stdout -----
 
 ----- stderr -----
-[36m◎[39m [36mFetching PR #101...[39m
-[31m✗[39m [31mAzure DevOps CLI extension not installed; run az extension add --name azure-devops[39m
+[33m▲[39m [33mSkipping [1mfeature[22m (1 path with unresolved conflicts)[39m
+[107m [0m conflict.txt
+
+[2m○[22m Skipped 1 worktree

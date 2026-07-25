@@ -1,12 +1,14 @@
 ---
-source: tests/integration_tests/switch.rs
+source: tests/integration_tests/push.rs
 info:
   program: wt
   args:
-    - switch
-    - "pr:101"
+    - step
+    - push
+    - main
   env:
     APPDATA: "[TEST_CONFIG_HOME]"
+    CLAUDE_CONFIG_DIR: "[TEST_CLAUDE_CONFIG]"
     CLICOLOR_FORCE: "1"
     COLUMNS: "500"
     GIT_AUTHOR_DATE: "2025-01-01T00:00:00Z"
@@ -35,6 +37,7 @@ info:
     WORKTRUNK_TEST_GEMINI_INSTALLED: "0"
     WORKTRUNK_TEST_NUSHELL_ENV: "0"
     WORKTRUNK_TEST_OPENCODE_INSTALLED: "0"
+    WORKTRUNK_TEST_PARENT_SHELL: ""
     WORKTRUNK_TEST_POWERSHELL_ENV: "0"
     WORKTRUNK_TEST_POWERSHELL_INSTALLED: "0"
     WORKTRUNK_TEST_SKIP_URL_HEALTH_CHECK: "1"
@@ -46,6 +49,5 @@ exit_code: 1
 ----- stdout -----
 
 ----- stderr -----
-[36m◎[39m [36mFetching PR #101...[39m
-[31m✗[39m [31mtea api failed for PR #101[39m
-[107m [0m tea: server error
+[31m✗[39m [31mWorktree directory missing for [1mmain[22m[39m
+[2m↳[22m [2mTo clean up, run [4mgit worktree prune[24m[22m

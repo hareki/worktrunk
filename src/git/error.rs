@@ -405,7 +405,8 @@ pub enum GitError {
         action: Option<String>,
     },
     /// The worktree is partway through a git operation, so a command that
-    /// replays commits (`wt merge`, `wt step rebase`) refuses to start.
+    /// rewrites or moves commits (`wt merge`, `wt step rebase`,
+    /// `wt step squash`, `wt step push`) refuses to start.
     ///
     /// Carries no operation and offers no remedy: `git status` names which
     /// operation is open and how to finish it, so restating either here only
@@ -1144,6 +1145,14 @@ impl GitError {
                         hint_message(cformat!("Remaining in directory: <underline>{listing}</>"))
                     )?;
                 }
+                // Fragile by necessity: matches git's English, which is
+                // localized and could be reworded. The text is `git worktree
+                // remove`'s own stderr — the failure never passes through a
+                // Rust `io::Error`, and git offers no porcelain or exit code
+                // that separates ENOTEMPTY from the rest. `remaining_entries`
+                // is not a substitute either: a permission-denied failure also
+                // leaves entries behind, and this hint is only right for
+                // ENOTEMPTY. A miss costs one hint.
                 if error.contains("not empty") {
                     write!(
                         f,
