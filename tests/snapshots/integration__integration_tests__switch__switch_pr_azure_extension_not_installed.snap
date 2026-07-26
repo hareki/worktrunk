@@ -49,4 +49,4 @@ exit_code: 1
 
 ----- stderr -----
 [36m◎[39m [36mFetching PR #101...[39m
-[31m✗[39m [31mAzure DevOps CLI extension not installed; run az extension add --name azure-devops[39m
+[31m✗[39m [31mazure-devops extension not installed; run az extension add --name azure-devops[39m

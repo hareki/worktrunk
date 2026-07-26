@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use color_print::cformat;
 use worktrunk::config::UserConfig;
-use worktrunk::git::{ErrorExt, Repository, WorktreeInfo};
+use worktrunk::git::{ErrorExt, Repository, WorktreeInfo, format_unresolved_conflicts};
 use worktrunk::path::{format_path_for_display, paths_match};
 use worktrunk::styling::{
     eprintln, format_with_gutter, hint_message, info_message, println, progress_message,
@@ -283,12 +283,11 @@ pub fn validate_candidates(
                 // is the policy choice of skip over abort, not the guard.
                 let unmerged = worktree.unmerged_paths()?;
                 if !unmerged.is_empty() {
-                    let count = unmerged.len();
-                    let paths = if count == 1 { "path" } else { "paths" };
                     eprintln!(
                         "{}",
                         warning_message(cformat!(
-                            "Skipping <bold>{branch}</> ({count} {paths} with unresolved conflicts)"
+                            "Skipping <bold>{branch}</> ({})",
+                            format_unresolved_conflicts(unmerged.len())
                         ))
                     );
                     eprintln!("{}", format_with_gutter(&unmerged.join("\n"), None));
@@ -305,7 +304,7 @@ pub fn validate_candidates(
                 // Stage all changes. `stage` refuses an unmerged index first —
                 // `git add -A` over an unresolved conflict would otherwise
                 // commit the `<<<<<<<` markers.
-                worktree.stage(StageMode::All, "relocate")?;
+                worktree.stage(StageMode::All)?;
                 // Commit using shared pipeline
                 let project_id = repo.project_identifier().ok();
                 let commit_config = config.commit_generation(project_id.as_deref());
@@ -468,7 +467,28 @@ impl<'a> RelocationExecutor<'a> {
                         made_progress = true;
                     }
                     Some(false) => {
-                        // Target occupied by another pending worktree - wait for it to move
+                        // Target occupied by another pending worktree. If that
+                        // occupant is itself blocked it will never vacate, so
+                        // this worktree can never reach its target either —
+                        // propagate the block. Leaving it for `break_cycle`
+                        // would temp-move it and then fail to finalize into the
+                        // still-occupied path, stranding it in the staging dir.
+                        if let Some(occupant_idx) = self.blocked_occupant(i) {
+                            let branch = self.pending[i].branch().to_string();
+                            let occupant = self.pending[occupant_idx].branch().to_string();
+                            let msg = cformat!(
+                                "Skipping <bold>{branch}</> (blocked by <bold>{occupant}</>, which can't be relocated)"
+                            );
+                            eprintln!("{}", warning_message(msg));
+                            self.blocked.insert(i);
+                            self.skipped_entries.push(SkippedEntry {
+                                branch,
+                                reason: "target_blocked",
+                            });
+                            made_progress = true;
+                        }
+                        // Otherwise the occupant is still pending and may yet
+                        // move (or forms a cycle `break_cycle` resolves).
                     }
                     None => {
                         // Target unexpectedly blocked (TOCTOU race or same-target conflict)
@@ -527,6 +547,29 @@ impl<'a> RelocationExecutor<'a> {
         self.current_locations
             .get(&canonical)
             .map(|occupant_idx| self.moved.contains(occupant_idx))
+    }
+
+    /// If `idx`'s target is occupied by a worktree we've already classified as
+    /// blocked (it will never vacate), return that occupant's index.
+    ///
+    /// A dependent whose occupant is blocked can never reach its target, so it
+    /// must be blocked too rather than handed to `break_cycle`. `break_cycle`
+    /// assumes "no progress ⟹ a cycle," temp-moves the dependent into the
+    /// staging dir, and `finalize_temp_relocations` then fails moving it into
+    /// the still-occupied target — erroring out and stranding the worktree in
+    /// staging.
+    fn blocked_occupant(&self, idx: usize) -> Option<usize> {
+        // The sole caller reaches here from `is_target_empty`'s `Some(false)`
+        // arm, which already established the target exists and is a tracked
+        // worktree — so no existence guard is needed. If the path were somehow
+        // gone, `canonicalize` falls back to the raw path, which won't match a
+        // canonical key, and `get` returns `None`.
+        let expected = &self.pending[idx].expected_path;
+        let canonical = expected.canonicalize().unwrap_or_else(|_| expected.clone());
+        self.current_locations
+            .get(&canonical)
+            .copied()
+            .filter(|occupant_idx| self.blocked.contains(occupant_idx))
     }
 
     /// Move a single worktree to its expected path.
