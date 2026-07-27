@@ -1377,7 +1377,6 @@ struct PipelineFactory {
     header_flash: Arc<items::HeaderFlash>,
     preview_dims: (usize, usize),
     skim_list_width: usize,
-    command_timeout: Option<std::time::Duration>,
     llm_command: Option<String>,
     summary_hint: Option<String>,
     show_branches: bool,
@@ -1507,7 +1506,6 @@ impl PipelineFactory {
         let bg_repo = spawn_repo.clone();
         let show_branches = self.show_branches;
         let show_remotes = self.show_remotes;
-        let command_timeout = self.command_timeout;
         let skim_list_width = self.skim_list_width;
         let collect_handle = std::thread::Builder::new()
             .name("picker-collect".into())
@@ -1517,7 +1515,6 @@ impl PipelineFactory {
                     collect::ShowConfig::Resolved {
                         show_branches,
                         show_remotes,
-                        command_timeout,
                         collect_deadline: None,
                         list_width: Some(skim_list_width),
                         progressive_handler: Some(bg_handler),
@@ -1726,10 +1723,6 @@ pub fn handle_picker(
     // the same live status. `--prs` rows carry their own number from the explicit
     // `--prs` forge call.
 
-    // Per-task command timeout (bounds any single git invocation) from
-    // shared `[list]` config. Still applies in progressive mode.
-    let command_timeout = config.list.task_timeout();
-
     // Progressive rendering means the picker never blocks waiting for
     // collect — so there's no UI-freeze budget to bound. The drain runs
     // until its results channel closes or the fallback DRAIN_TIMEOUT
@@ -1872,7 +1865,6 @@ summary = true
         header_flash: Arc::new(items::HeaderFlash::default()),
         preview_dims,
         skim_list_width,
-        command_timeout,
         llm_command,
         summary_hint,
         show_branches,
@@ -2803,6 +2795,7 @@ pub mod tests {
             branch_name: Some("feature".to_string()),
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -2897,6 +2890,7 @@ pub mod tests {
             branch_name: None,
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -2987,6 +2981,7 @@ pub mod tests {
             branch_name: Some("feature".to_string()),
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -3153,7 +3148,6 @@ pub mod tests {
             header_flash: Arc::new(super::items::HeaderFlash::default()),
             preview_dims: (80, 24),
             skim_list_width: 80,
-            command_timeout: None,
             llm_command: None,
             summary_hint: None,
             show_branches: false,
@@ -3674,6 +3668,7 @@ pub mod tests {
             branch_name: Some("feature".to_string()),
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -3689,6 +3684,7 @@ pub mod tests {
             branch_name: None,
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -4036,6 +4032,7 @@ pub mod tests {
             branch_name: Some(branch.to_string()),
             deletion_mode: mode,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -4133,6 +4130,7 @@ pub mod tests {
             branch_name: Some("x".to_string()),
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -4191,6 +4189,7 @@ pub mod tests {
             branch_name: Some("feature".to_string()),
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
@@ -4236,6 +4235,7 @@ pub mod tests {
             branch_name: Some("feature".to_string()),
             deletion_mode: BranchDeletionMode::SafeDelete,
             target_branch: Some("main".to_string()),
+            integration_reason: None,
             force_worktree: false,
             removed_commit: None,
         };
