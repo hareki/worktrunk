@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::worktree::RemoveResult;
+use super::worktree::{RemoveResult, SharedBranchCheckout};
 use anyhow::{Context, bail};
 use color_print::cformat;
 use worktrunk::git::{
@@ -10,12 +10,21 @@ use worktrunk::git::{
     parse_porcelain_z, parse_untracked_files,
 };
 use worktrunk::path::format_path_for_display;
-use worktrunk::styling::{eprintln, format_with_gutter, progress_message, warning_message};
+use worktrunk::styling::{
+    eprintln, format_with_gutter, progress_message, suggest_command, warning_message,
+};
 
 /// Target for worktree removal.
 #[derive(Debug)]
 pub enum RemoveTarget<'a> {
-    /// Remove worktree by branch name
+    /// Delete a branch that has no worktree.
+    ///
+    /// A branch names a worktree only while it has exactly one: let it name
+    /// two, which `git worktree add --force` allows, and the lookup silently
+    /// picks git's first-listed checkout. So callers resolve first and pass
+    /// [`Path`](Self::Path) for anything that has a worktree, and this variant
+    /// carries only the branch-only case. One that has since acquired a
+    /// worktree lost the race and errors rather than removing it unasked.
     Branch(&'a str),
     /// Remove the current worktree (supports detached HEAD)
     Current,
@@ -29,7 +38,8 @@ pub trait RepositoryCliExt {
     /// Warn about untracked files being auto-staged.
     fn warn_if_auto_staging_untracked(&self) -> anyhow::Result<()>;
 
-    /// Prepare a worktree removal by branch name or current worktree.
+    /// Prepare the removal of whichever worktree or branch [`RemoveTarget`]
+    /// names.
     ///
     /// Returns a `RemoveResult` describing what will be removed. The actual
     /// removal is performed by the output handler.
@@ -132,66 +142,56 @@ impl RepositoryCliExt for Repository {
                 is_current: bool,
             },
             BranchOnly {
+                /// Path of the stale worktree entry this fell back from, when
+                /// the fallback was a prune. `None` when the branch has no
+                /// worktree entry at all, which is also the only case with no
+                /// sibling to check — a branch that has one resolves to
+                /// `Worktree` above, or, named as a `Branch` target, errors.
+                pruned_from: Option<PathBuf>,
                 branch: String,
-                pruned: bool,
             },
         }
 
         let resolved = match target {
             RemoveTarget::Branch(branch) => {
-                match worktrees
+                // The caller established there was no worktree, so one here
+                // appeared in between. Falling through would remove it — the
+                // wrong operation, and on a worktree nobody named — so the
+                // race surfaces instead. `wt remove <path>` is the spelling
+                // that does mean "remove that worktree".
+                if let Some(wt) = worktrees
                     .iter()
                     .find(|wt| wt.branch.as_deref() == Some(branch))
                 {
-                    Some(wt) => {
-                        if !wt.path.exists() {
-                            // Directory missing - prune and continue
-                            self.prune_worktrees()?;
-                            Resolved::BranchOnly {
-                                branch: branch.to_string(),
-                                pruned: true,
-                            }
-                        } else if wt.locked.is_some() {
-                            return Err(GitError::WorktreeLocked {
-                                branch: branch.into(),
-                                path: wt.path.clone(),
-                                reason: wt.locked.clone(),
-                            }
-                            .into());
-                        } else {
-                            let is_current = current_path == wt.path;
-                            Resolved::Worktree {
-                                path: wt.path.clone(),
-                                branch: Some(branch.to_string()),
-                                is_current,
-                            }
+                    let path = format_path_for_display(&wt.path);
+                    bail!(cformat!(
+                        "Branch <bold>{branch}</> gained a worktree @ <bold>{path}</> since it was selected; to remove that worktree, run <bold>{}</>",
+                        suggest_command("remove", &[&path], &[])
+                    ));
+                }
+                // Check the branch exists locally, so a typo or a remote-only
+                // name reports itself rather than deleting nothing.
+                let branch_handle = self.branch(branch);
+                if !branch_handle.exists_locally()? {
+                    let remotes = branch_handle.remotes()?;
+                    if !remotes.is_empty() {
+                        return Err(GitError::RemoteOnlyBranch {
+                            branch: branch.into(),
+                            remote: remotes[0].clone(),
                         }
+                        .into());
                     }
-                    None => {
-                        // No worktree found - check if the branch exists locally
-                        let branch_handle = self.branch(branch);
-                        if !branch_handle.exists_locally()? {
-                            let remotes = branch_handle.remotes()?;
-                            if !remotes.is_empty() {
-                                return Err(GitError::RemoteOnlyBranch {
-                                    branch: branch.into(),
-                                    remote: remotes[0].clone(),
-                                }
-                                .into());
-                            }
-                            return Err(GitError::BranchNotFound {
-                                branch: branch.into(),
-                                show_create_hint: false,
-                                last_fetch_ago: None,
-                                pr_mr_platform: None,
-                            }
-                            .into());
-                        }
-                        Resolved::BranchOnly {
-                            branch: branch.to_string(),
-                            pruned: false,
-                        }
+                    return Err(GitError::BranchNotFound {
+                        branch: branch.into(),
+                        show_create_hint: false,
+                        last_fetch_ago: None,
+                        pr_mr_platform: None,
                     }
+                    .into());
+                }
+                Resolved::BranchOnly {
+                    pruned_from: None,
+                    branch: branch.to_string(),
                 }
             }
             RemoveTarget::Current | RemoveTarget::Path(_) => {
@@ -201,27 +201,42 @@ impl RepositoryCliExt for Repository {
                 };
                 let wt = worktrees
                     .iter()
-                    .find(|wt| wt.path == lookup_path)
+                    .find(|wt| worktrunk::path::paths_match(&wt.path, lookup_path))
                     .ok_or_else(|| {
                         anyhow::anyhow!("Worktree not found at {}", lookup_path.display())
                     })?;
-                if wt.locked.is_some() {
-                    let name = wt
-                        .branch
-                        .clone()
-                        .unwrap_or_else(|| wt.dir_name().to_string());
-                    return Err(GitError::WorktreeLocked {
-                        branch: name,
-                        path: wt.path.clone(),
-                        reason: wt.locked.clone(),
+                // Directory missing (e.g. external `rm -rf`): prune the stale
+                // metadata and fall back to branch-only deletion — the same
+                // handling the branch-targeted path applies. A detached
+                // worktree has no branch to fall back to, so it proceeds and
+                // surfaces the removal error.
+                if let Some(branch) = wt.branch.as_deref()
+                    && !wt.path.exists()
+                {
+                    self.prune_worktrees()?;
+                    Resolved::BranchOnly {
+                        pruned_from: Some(wt.path.clone()),
+                        branch: branch.to_string(),
                     }
-                    .into());
-                }
-                let is_current = wt.path == current_path;
-                Resolved::Worktree {
-                    path: wt.path.clone(),
-                    branch: wt.branch.clone(),
-                    is_current,
+                } else {
+                    if wt.locked.is_some() {
+                        let name = wt
+                            .branch
+                            .clone()
+                            .unwrap_or_else(|| wt.dir_name().to_string());
+                        return Err(GitError::WorktreeLocked {
+                            branch: name,
+                            path: wt.path.clone(),
+                            reason: wt.locked.clone(),
+                        }
+                        .into());
+                    }
+                    let is_current = wt.path == current_path;
+                    Resolved::Worktree {
+                        path: wt.path.clone(),
+                        branch: wt.branch.clone(),
+                        is_current,
+                    }
                 }
             }
         };
@@ -247,7 +262,27 @@ impl RepositoryCliExt for Repository {
         // worktree-level checks. Branch-only removals have no pre-remove hook,
         // so their integration decision can be computed here.
         let (worktree_path, branch_name, is_current) = match resolved {
-            Resolved::BranchOnly { branch, pruned } => {
+            Resolved::BranchOnly {
+                pruned_from,
+                branch,
+            } => {
+                // The missing-directory fallback reaches the same ref deletion a
+                // worktree removal does, so it needs the same guard: a sibling
+                // checkout whose directory is intact would be orphaned by it.
+                let shared = pruned_from.as_deref().and_then(|target| {
+                    live_sibling_checkout(worktrees, &branch, target)
+                        .map(|sibling| SharedBranchCheckout::new(&sibling.path, &deletion_mode))
+                });
+                if let Some(shared) = shared {
+                    return Ok(RemoveResult::BranchOnly {
+                        branch_name: branch,
+                        deletion_mode: BranchDeletionMode::Keep,
+                        pruned: true,
+                        target_branch: None,
+                        integration_reason: None,
+                        branch_checked_out_at: Some(shared),
+                    });
+                }
                 let default_branch = self.default_branch();
                 let target = default_branch.as_deref().or(Some("HEAD"));
                 let (integration_reason, target_branch) = compute_integration_reason(
@@ -260,9 +295,10 @@ impl RepositoryCliExt for Repository {
                 return Ok(RemoveResult::BranchOnly {
                     branch_name: branch,
                     deletion_mode,
-                    pruned,
+                    pruned: pruned_from.is_some(),
                     target_branch,
                     integration_reason,
+                    branch_checked_out_at: None,
                 });
             }
             Resolved::Worktree {
@@ -292,23 +328,40 @@ impl RepositoryCliExt for Repository {
             primary_path
         };
 
+        let branch_checked_out_at = branch_name.as_deref().and_then(|branch| {
+            live_sibling_checkout(worktrees, branch, &worktree_path)
+                .map(|sibling| SharedBranchCheckout::new(&sibling.path, &deletion_mode))
+        });
+
         // Resolve target branch and integration verdict for display and
         // retention prediction. The actual branch deletion re-decides against
         // fresh refs (`delete_branch_if_safe`'s CAS), so this is display-only.
-        let default_branch = self.default_branch();
-        let target_branch = match (&default_branch, &branch_name) {
-            (Some(db), Some(bn)) if db == bn => None,
-            _ => default_branch,
-        };
-        let (integration_reason, target_branch) = match compute_integration_reason(
-            self,
-            snapshot,
-            branch_name.as_deref(),
-            target_branch.as_deref(),
-            deletion_mode,
-        ) {
-            (reason, Some(effective_target)) => (reason, Some(effective_target)),
-            (reason, None) => (reason, target_branch),
+        //
+        // A retained shared branch skips all of it: forcing `Keep` — the single
+        // chokepoint every deletion path honors — settles the outcome, so an
+        // integration verdict would only be computed to be ignored, and
+        // reporting one alongside a branch that survives reads as a
+        // contradiction.
+        let (deletion_mode, target_branch, integration_reason) = if branch_checked_out_at.is_some()
+        {
+            (BranchDeletionMode::Keep, None, None)
+        } else {
+            let default_branch = self.default_branch();
+            let target_branch = match (&default_branch, &branch_name) {
+                (Some(db), Some(bn)) if db == bn => None,
+                _ => default_branch,
+            };
+            let (integration_reason, target_branch) = match compute_integration_reason(
+                self,
+                snapshot,
+                branch_name.as_deref(),
+                target_branch.as_deref(),
+                deletion_mode,
+            ) {
+                (reason, Some(effective_target)) => (reason, Some(effective_target)),
+                (reason, None) => (reason, target_branch),
+            };
+            (deletion_mode, target_branch, integration_reason)
         };
 
         // Capture commit SHA before removal for post-remove hook template variables.
@@ -332,6 +385,7 @@ impl RepositoryCliExt for Repository {
             integration_reason,
             force_worktree,
             removed_commit,
+            branch_checked_out_at,
         })
     }
 
@@ -508,10 +562,38 @@ pub(crate) fn compute_integration_reason(
     }
 }
 
+/// The worktree, other than the one being removed, whose checkout of `branch`
+/// deleting the ref would orphan.
+///
+/// A branch reaches two worktrees only through `git worktree add --force`,
+/// which worktrunk never runs itself. Once it has, the ref is live in both, and
+/// worktrunk deletes branches with `git update-ref -d` — git's compare-and-swap
+/// primitive, which unlike `git branch -d` does not refuse a ref that is
+/// checked out somewhere. Deleting it leaves the other checkout at a null OID
+/// with an unresolvable `HEAD`, so every removal that could delete a branch
+/// asks this first.
+///
+/// Only a live directory counts. A sibling entry whose directory is already
+/// gone is stale metadata awaiting `git worktree prune`, not a checkout with
+/// anything to lose — retaining a branch for it would strand the branch and
+/// point the user at a directory that isn't there.
+pub(crate) fn live_sibling_checkout<'a>(
+    worktrees: &'a [WorktreeInfo],
+    branch: &str,
+    removing: &Path,
+) -> Option<&'a WorktreeInfo> {
+    worktrees.iter().find(|wt| {
+        wt.branch.as_deref() == Some(branch)
+            && !worktrunk::path::paths_match(&wt.path, removing)
+            && wt.path.exists()
+    })
+}
+
 /// Reject removing the default branch unless force-delete is set.
 ///
 /// The default branch is the integration target — checking it against itself is
-/// tautological (same logic as `wt list`'s `is_main` guard in `check_integration_state`).
+/// tautological (same logic as `wt list`'s `is_main` guard in
+/// `check_integration_state`).
 pub(crate) fn check_not_default_branch(
     repo: &Repository,
     branch: &str,

@@ -2798,6 +2798,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
 
         AltXRemover::do_removal(&repo, &result, &Approvals::default()).unwrap();
@@ -2821,6 +2822,7 @@ pub mod tests {
             pruned: false,
             target_branch: None,
             integration_reason: None,
+            branch_checked_out_at: None,
         };
         AltXRemover::do_removal(&repo, &result, &Approvals::default()).unwrap();
 
@@ -2847,6 +2849,7 @@ pub mod tests {
             pruned: false,
             target_branch: None,
             integration_reason: None,
+            branch_checked_out_at: None,
         };
         AltXRemover::do_removal(&repo, &result, &Approvals::default()).unwrap();
 
@@ -2893,6 +2896,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
 
         AltXRemover::do_removal(&repo, &result, &Approvals::default()).unwrap();
@@ -2918,6 +2922,34 @@ pub mod tests {
         assert!(
             matches!(&result, RemoveResult::BranchOnly { branch_name, .. } if branch_name == "branch-only-feature"),
             "a branch with no worktree should resolve to BranchOnly"
+        );
+    }
+
+    /// A branch-only row whose branch has since acquired a worktree — someone
+    /// ran `wt switch` elsewhere while the picker sat open. The row's signal
+    /// still decodes to `Branch`, and removing it would take out a worktree
+    /// nobody selected, so validation refuses.
+    #[test]
+    fn test_prepare_removal_refuses_branch_that_gained_a_worktree() {
+        let mut test = worktrunk::testing::TestRepo::with_initial_commit();
+        let worktree_path = test.add_worktree("feature");
+        let repo = worktrunk::git::Repository::at(test.path()).unwrap();
+
+        let remover = test_remover(Arc::new(Mutex::new(Vec::new())), repo);
+
+        let target = PickerRemovalTarget::from_signal("feature").unwrap();
+        let err = remover
+            .prepare_removal(&target)
+            .map(|_| ())
+            .expect_err("a branch with a worktree should not delete as branch-only");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("feature") && rendered.contains("wt remove"),
+            "error should name the branch and the command that removes its worktree: {err:#}"
+        );
+        assert!(
+            worktree_path.exists(),
+            "the worktree nobody selected should survive"
         );
     }
 
@@ -2984,6 +3016,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
 
         // Empty approvals → `approve_readonly` drops the unapproved project
@@ -3671,6 +3704,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
         assert_eq!(
             super::removal_failure_subject(&branched),
@@ -3687,6 +3721,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
         assert_eq!(
             super::removal_failure_subject(&detached),
@@ -3699,6 +3734,7 @@ pub mod tests {
             pruned: false,
             target_branch: None,
             integration_reason: None,
+            branch_checked_out_at: None,
         };
         assert_eq!(
             super::removal_failure_subject(&branch_only),
@@ -4035,6 +4071,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
 
         assert_eq!(
@@ -4133,6 +4170,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
         assert!(super::removal_target_still_present(
             &repo,
@@ -4150,6 +4188,7 @@ pub mod tests {
             pruned: false,
             target_branch: None,
             integration_reason: None,
+            branch_checked_out_at: None,
         };
         assert!(super::removal_target_still_present(&repo, &present_branch));
 
@@ -4159,6 +4198,7 @@ pub mod tests {
             pruned: false,
             target_branch: None,
             integration_reason: None,
+            branch_checked_out_at: None,
         };
         assert!(!super::removal_target_still_present(&repo, &gone_branch));
     }
@@ -4179,6 +4219,7 @@ pub mod tests {
                 pruned: false,
                 target_branch: None,
                 integration_reason: integration,
+                branch_checked_out_at: None,
             }
         };
 
@@ -4192,6 +4233,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
         assert!(
             super::removal_will_remove_target(&worktree),
@@ -4238,6 +4280,7 @@ pub mod tests {
             integration_reason: None,
             force_worktree: false,
             removed_commit: None,
+            branch_checked_out_at: None,
         };
         assert!(
             super::removal_targets_current_worktree(&worktree(true)),
@@ -4254,6 +4297,7 @@ pub mod tests {
                 pruned: false,
                 target_branch: None,
                 integration_reason: None,
+                branch_checked_out_at: None,
             }),
             "a branch-only row has no worktree to be standing in"
         );
