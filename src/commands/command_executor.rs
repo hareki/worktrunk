@@ -5,8 +5,8 @@ use anyhow::Result;
 use color_print::cformat;
 use worktrunk::HookType;
 use worktrunk::config::{
-    Command, CommandConfig, HookStep, TemplateContext, UserConfig, VarScope, format_hook_variables,
-    template_references_var, validate_template_syntax,
+    Command, CommandConfig, HookStep, TemplateContext, UserConfig, VarScope, VarsMode,
+    format_hook_variables, validate_template_syntax,
 };
 use worktrunk::git::{ErrorExt, Repository, WorktrunkError};
 use worktrunk::path::{format_path_for_display, to_posix_path};
@@ -26,8 +26,9 @@ use crate::output::{DirectivePassthrough, execute_shell_command};
 pub struct PreparedCommand {
     pub name: Option<String>,
     /// Raw template, rendered against `context` when the command runs.
-    /// Syntax is validated at preparation; rendering is deferred so `vars.*`
-    /// set by earlier pipeline steps are read fresh from git config.
+    /// Execution paths validate syntax via [`PreparedPipeline::validated`];
+    /// rendering is deferred so `vars.*` set by earlier pipeline steps are
+    /// read fresh from git config.
     pub template: String,
     /// Template variables, frozen at preparation. Serialized to JSON only at
     /// the process boundary (child stdin, background pipeline spec).
@@ -60,6 +61,14 @@ impl PreparedStep {
     pub fn into_commands(self) -> Vec<PreparedCommand> {
         match self {
             Self::Single(cmd) => vec![cmd],
+            Self::Concurrent(cmds) => cmds,
+        }
+    }
+
+    /// Borrow the step's commands (Single becomes a one-element slice).
+    pub fn commands(&self) -> &[PreparedCommand] {
+        match self {
+            Self::Single(cmd) => std::slice::from_ref(cmd),
             Self::Concurrent(cmds) => cmds,
         }
     }
@@ -426,24 +435,26 @@ fn resolve_command_str(cmd: &PreparedCommand, repo: &Repository) -> Result<Strin
     expand_shell_template(&cmd.template, &cmd.context, repo, &cmd.template_name)
 }
 
-/// Render a template for dry-run / preview display. Mirrors execution-time
-/// semantics: a template referencing `vars.*` is shown raw after a syntax
-/// check — its values resolve from git config when the step runs, possibly
-/// written by earlier pipeline steps — while everything else renders against
-/// `context`. Expansion is side-effect-free, so previewing never perturbs the
-/// real run.
+/// Render a template for dry-run / preview display.
+///
+/// Everything renders against `context` as it would at execution time, except
+/// `{{ vars.<key> }}`, which renders back as itself: those values are read from
+/// git config when the step runs, possibly written by an earlier step, so a
+/// value resolved now could differ from the one the run uses. Expansion is
+/// side-effect-free, so previewing never perturbs the real run.
 pub fn render_template_preview(
     template: &str,
     context: &TemplateContext,
     repo: &Repository,
     name: &str,
 ) -> Result<String> {
-    if template_references_var(template, "vars") {
-        validate_template_syntax(template, name)?;
-        Ok(template.to_string())
-    } else {
-        expand_shell_template(template, context, repo, name)
-    }
+    Ok(context.expand_with(
+        template,
+        ShellEscapeMode::Posix,
+        repo,
+        name,
+        VarsMode::Literal,
+    )?)
 }
 
 /// Short summary name: "user:name" for named commands, "user" otherwise.
@@ -727,21 +738,55 @@ pub fn map_config_steps(
         .collect()
 }
 
-/// Prepare hook pipeline steps for execution, preserving serial/concurrent
-/// structure. All hook preparation goes through this function (both
-/// foreground and background paths).
+/// A prepared pipeline that has not yet chosen a syntax-error policy.
+///
+/// [`prepare_steps`] returns this rather than the steps themselves so the
+/// choice is a method call the compiler demands: running hooks takes
+/// [`validated`](Self::validated), and the one caller that must not abort takes
+/// [`into_unvalidated`](Self::into_unvalidated). A new execution path can no
+/// longer skip the check by forgetting a line — the same reason `ApprovedHookPlan`
+/// makes hook approval unforgeable.
+#[must_use]
+pub struct PreparedPipeline(Vec<PreparedStep>);
+
+impl PreparedPipeline {
+    /// The steps, rejected if any template cannot parse — so a pipeline that
+    /// cannot render in full never starts.
+    ///
+    /// Semantic errors (undefined variable, filter failure) are not checked:
+    /// rendering is deferred, so they surface at the failing step.
+    pub fn validated(self) -> Result<Vec<PreparedStep>> {
+        for cmd in self.0.iter().flat_map(PreparedStep::commands) {
+            validate_template_syntax(&cmd.template, &cmd.template_name)?;
+        }
+        Ok(self.0)
+    }
+
+    /// The steps with no syntax check, for `wt hook show --expanded`: a
+    /// listing annotates a broken template in place rather than blanking the
+    /// rest of the listing.
+    pub fn into_unvalidated(self) -> Vec<PreparedStep> {
+        self.0
+    }
+}
+
+/// Prepare hook pipeline steps, preserving serial/concurrent structure. Sole
+/// producer of hook command contexts: both the paths that run hooks (foreground
+/// and background) and the `wt hook show --expanded` listing come through here,
+/// so a context key added here reaches both with no second edit.
 ///
 /// Each command freezes its context as JSON and keeps its raw template;
-/// rendering happens when the command runs. Syntax errors abort here — before
-/// the first step runs — while semantic errors (undefined variable, filter
-/// failure) surface at the failing step.
+/// rendering happens when the command runs, so semantic errors (undefined
+/// variable, filter failure) surface at the failing step. The returned
+/// [`PreparedPipeline`] makes the caller choose what an unparsable template
+/// does.
 pub fn prepare_steps(
     command_config: &CommandConfig,
     ctx: &CommandContext<'_>,
     extra_vars: &[(&str, &str)],
     hook_type: HookType,
     source: HookSource,
-) -> anyhow::Result<Vec<PreparedStep>> {
+) -> anyhow::Result<PreparedPipeline> {
     // Built once per pipeline — build_hook_context spawns git subprocesses.
     let mut base_context = build_hook_context(ctx, extra_vars, VarScope::All)?;
 
@@ -759,7 +804,7 @@ pub fn prepare_steps(
         base_context.insert(worktrunk::config::ALIAS_ARGS_KEY, "[]");
     }
 
-    map_config_steps(command_config, |cmd| {
+    let steps = map_config_steps(command_config, |cmd| {
         // hook_name is per-command: available as template variable and in JSON context
         let mut cmd_context = base_context.clone();
         if let Some(ref name) = cmd.name {
@@ -770,7 +815,6 @@ pub fn prepare_steps(
             Some(name) => format!("{source}:{name}"),
             None => format!("{source} {hook_type} hook"),
         };
-        validate_template_syntax(&cmd.template, &template_name)?;
 
         Ok(PreparedCommand {
             name: cmd.name.clone(),
@@ -779,7 +823,8 @@ pub fn prepare_steps(
             template_name,
             label: command_summary_name(cmd.name.as_deref(), source),
         })
-    })
+    })?;
+    Ok(PreparedPipeline(steps))
 }
 
 #[cfg(test)]
@@ -911,27 +956,5 @@ mod tests {
         let wrapper = hook_error_wrapper(HookType::PostCreate);
         let result = handle_command_error(err, &cmd, &wrapper, FailureStrategy::Warn);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_template_references_var_for_vars() {
-        // Real vars references
-        assert!(template_references_var("{{ vars.container }}", "vars"));
-        assert!(template_references_var("{{vars.container}}", "vars"));
-        assert!(template_references_var(
-            "docker run --name {{ vars.name }}",
-            "vars"
-        ));
-        assert!(template_references_var(
-            "{% if vars.key %}yes{% endif %}",
-            "vars"
-        ));
-
-        // Literal text — not a template reference
-        assert!(!template_references_var(
-            "echo hello > template_vars.txt",
-            "vars"
-        ));
-        assert!(!template_references_var("no vars references here", "vars"));
     }
 }
