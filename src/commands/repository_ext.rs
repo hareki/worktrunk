@@ -205,32 +205,46 @@ impl RepositoryCliExt for Repository {
                     .ok_or_else(|| {
                         anyhow::anyhow!("Worktree not found at {}", lookup_path.display())
                     })?;
+                // Lock guard first, before the missing-directory fallback. A
+                // lock means "don't remove this", and a temporarily-absent
+                // directory (removable media, a network mount, a dropped VPN)
+                // is exactly the case `git worktree lock` exists for — so an
+                // absent directory must not route a locked worktree into the
+                // pruning + branch-deletion path below (#3645). `--force` does
+                // not override the lock, matching `git worktree remove`.
+                if wt.locked.is_some() {
+                    let name = wt
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| wt.dir_name().to_string());
+                    return Err(GitError::WorktreeLocked {
+                        branch: name,
+                        path: wt.path.clone(),
+                        reason: wt.locked.clone(),
+                    }
+                    .into());
+                }
                 // Directory missing (e.g. external `rm -rf`): prune the stale
                 // metadata and fall back to branch-only deletion — the same
                 // handling the branch-targeted path applies. A detached
                 // worktree has no branch to fall back to, so it proceeds and
                 // surfaces the removal error.
+                //
+                // The prune names this worktree rather than sweeping the repo,
+                // so a sibling whose directory is merely absent right now keeps
+                // its registration. `git worktree remove` refuses a locked
+                // worktree where a repo-wide prune ignored one, which needs no
+                // guard here: the lock check above already returned for every
+                // locked entry in this arm.
                 if let Some(branch) = wt.branch.as_deref()
                     && !wt.path.exists()
                 {
-                    self.prune_worktrees()?;
+                    self.prune_worktree_entry(&wt.path)?;
                     Resolved::BranchOnly {
                         pruned_from: Some(wt.path.clone()),
                         branch: branch.to_string(),
                     }
                 } else {
-                    if wt.locked.is_some() {
-                        let name = wt
-                            .branch
-                            .clone()
-                            .unwrap_or_else(|| wt.dir_name().to_string());
-                        return Err(GitError::WorktreeLocked {
-                            branch: name,
-                            path: wt.path.clone(),
-                            reason: wt.locked.clone(),
-                        }
-                        .into());
-                    }
                     let is_current = wt.path == current_path;
                     Resolved::Worktree {
                         path: wt.path.clone(),

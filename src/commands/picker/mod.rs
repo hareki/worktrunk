@@ -122,9 +122,7 @@ use worktrunk::HookType;
 use worktrunk::config::Approvals;
 use worktrunk::git::{ErrorExt, Repository, current_or_recover};
 use worktrunk::path::format_path_for_display;
-use worktrunk::styling::{
-    eprintln, error_message, hint_message, info_message, strip_osc8_hyperlinks, warning_message,
-};
+use worktrunk::styling::{eprintln, error_message, hint_message, info_message, warning_message};
 
 use super::hook_plan::{ApprovedHookPlan, HookPlanBuilder};
 use super::hooks::HookAnnouncer;
@@ -832,8 +830,7 @@ struct MorphRevert {
 /// kind — `refresh_status_symbols` only fills empty slots, so the worktree's must
 /// be cleared first. The [`LocalContent`] is read off the demoted item, so its
 /// `working_tree` signal resolves empty (no worktree to diff) and the
-/// `working_tree` preview tab dims. OSC 8 hyperlinks are stripped to match the
-/// rows the handler builds (skim's pipeline mangles them).
+/// `working_tree` preview tab dims.
 fn build_morph_branch_row(
     layout: &crate::commands::list::layout::LayoutConfig,
     worktree_item: &ListItem,
@@ -843,11 +840,9 @@ fn build_morph_branch_row(
     branch_item.kind = ItemKind::Branch(BranchScope::Local);
     branch_item.status_symbols = Default::default();
     branch_item.refresh_status_symbols(default_branch);
-    let line = strip_osc8_hyperlinks(
-        &layout
-            .render_list_item_line(&branch_item, PLACEHOLDER)
-            .render(),
-    );
+    let line = layout
+        .render_list_item_line(&branch_item, PLACEHOLDER)
+        .render();
     (line, LocalContent::from_item(&branch_item))
 }
 
@@ -3165,7 +3160,10 @@ pub mod tests {
             Some(crate::commands::list::layout::calculate_layout_with_width(
                 std::slice::from_ref(&*item_arc),
                 &crate::commands::list::columns::all_tasks(),
-                80,
+                crate::commands::list::layout::Destination {
+                    width: 80,
+                    link_style: crate::commands::list::layout::LinkStyle::Expanded,
+                },
                 Path::new("/test"),
                 None,
                 None,
@@ -3235,8 +3233,9 @@ pub mod tests {
     /// concurrent background removal can trigger.
     ///
     /// `apply` renames the worktree into the trash (so its path vanishes) and
-    /// then runs `git worktree prune`, which deletes the `.git/worktrees/<id>`
-    /// admin dir — all on a background thread. `git branch --list` enumerates
+    /// then runs `git worktree remove` on it, which deletes that worktree's
+    /// `.git/worktrees/<id>` admin dir — all on a background thread.
+    /// `git branch --list` enumerates
     /// worktrees to mark checked-out branches, so a query that races the
     /// in-flight prune can read a half-deleted admin dir and fail with
     /// `exit 128`. A test that `.unwrap()`s such a query flakes; retry until the
@@ -4136,7 +4135,10 @@ pub mod tests {
         let layout = crate::commands::list::layout::calculate_layout_with_width(
             std::slice::from_ref(&worktree_item),
             &crate::commands::list::columns::all_tasks(),
-            80,
+            crate::commands::list::layout::Destination {
+                width: 80,
+                link_style: crate::commands::list::layout::LinkStyle::Expanded,
+            },
             Path::new("/test"),
             None,
             None,

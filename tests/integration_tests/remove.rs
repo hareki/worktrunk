@@ -257,6 +257,59 @@ fn test_remove_locked_detached_multi(mut repo: TestRepo) {
     ));
 }
 
+/// Regression test for #3645: a locked worktree whose directory is currently
+/// absent must still honor the lock on removal. The missing-directory fallback
+/// used to run before the lock guard, so `wt remove` pruned the registration
+/// and fell through to branch deletion — bypassing the lock entirely. A lock
+/// says "don't remove this", and a temporarily-unreachable directory (removable
+/// media, a network mount, a dropped VPN) is exactly the case it exists for.
+#[rstest]
+fn test_remove_locked_worktree_directory_missing(mut repo: TestRepo) {
+    let worktree_path = repo.add_worktree("locked-missing");
+    repo.lock_worktree("locked-missing", Some("Detachable media"));
+
+    // Simulate the directory becoming unreachable (unmounted media, etc.).
+    std::fs::remove_dir_all(&worktree_path).expect("Failed to remove worktree directory");
+
+    // `wt remove` must refuse: the lock guards the branch and registration even
+    // though the directory is currently absent.
+    let output = repo
+        .wt_command()
+        .args(["remove", "locked-missing"])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "wt remove should fail on a locked worktree even when its directory is missing.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // The branch must survive.
+    let branch_exists = repo
+        .git_command()
+        .args(["branch", "--list", "locked-missing"])
+        .run()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&branch_exists.stdout)
+            .trim()
+            .is_empty(),
+        "Branch should NOT be deleted for a locked worktree",
+    );
+
+    // The (stale) registration must NOT be pruned — the lock still guards it.
+    let list_after = repo
+        .git_command()
+        .args(["worktree", "list", "--porcelain"])
+        .run()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&list_after.stdout).contains("locked-missing"),
+        "Locked worktree registration should NOT be pruned",
+    );
+}
+
 #[rstest]
 fn test_remove_by_name_from_main(mut repo: TestRepo) {
     // Create a worktree
@@ -4250,5 +4303,79 @@ fn test_remove_last_live_checkout_deletes_branch(mut repo: TestRepo) {
     assert!(
         !stderr.contains("still checked out"),
         "a stale entry is not a checkout to retain the branch for\nstderr:\n{stderr}",
+    );
+}
+
+/// Assert git still tracks `branch`'s worktree — that its `.git/worktrees/<id>`
+/// admin dir survived a neighbouring removal.
+fn assert_still_registered(repo: &TestRepo, branch: &str) {
+    let listed = repo
+        .git_command()
+        .args(["worktree", "list", "--porcelain"])
+        .run()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        listed.contains(&format!("branch refs/heads/{branch}")),
+        "worktree for `{branch}` must still be registered\n{listed}"
+    );
+}
+
+/// Displace a worktree's directory, as an unmounted volume or a half-finished
+/// `mv` would, and return the path it was parked at.
+fn displace(worktree: &std::path::Path) -> std::path::PathBuf {
+    let parked = worktree.parent().unwrap().join("displaced-elsewhere");
+    std::fs::rename(worktree, &parked).unwrap();
+    parked
+}
+
+/// A removal clears the metadata for the worktree it was asked to remove, and
+/// for no other.
+///
+/// `git worktree prune` takes no path filter: it unregisters every entry whose
+/// directory it cannot find at that instant. A sibling that is merely absent is
+/// indistinguishable from a deleted one, so a repo-wide sweep would take its
+/// `.git/worktrees/<id>` admin dir too — discarding the index, `ORIG_HEAD`, the
+/// per-worktree refs, and any in-progress rebase. `git worktree repair` cannot
+/// rebuild those, so the removal has to name its target.
+#[rstest]
+fn test_remove_spares_absent_sibling(mut repo: TestRepo) {
+    let victim = repo.add_worktree("victim");
+    let bystander = repo.add_worktree("bystander");
+    let parked = displace(&bystander);
+
+    run_remove(&repo, &["--foreground", "victim"]);
+    assert!(!victim.exists(), "the named worktree should be gone");
+
+    // The bystander's volume comes back.
+    std::fs::rename(&parked, &bystander).unwrap();
+    assert_still_registered(&repo, "bystander");
+}
+
+/// The same guarantee on the missing-directory route: `wt remove` on a worktree
+/// whose directory is already gone degrades to a branch-only deletion, and the
+/// stale-metadata cleanup that precedes it must also spare a displaced sibling.
+#[rstest]
+fn test_remove_stale_entry_spares_absent_sibling(mut repo: TestRepo) {
+    let victim = repo.add_worktree("victim");
+    let bystander = repo.add_worktree("bystander");
+    std::fs::remove_dir_all(&victim).unwrap();
+    let parked = displace(&bystander);
+
+    run_remove(&repo, &["--foreground", "victim"]);
+
+    std::fs::rename(&parked, &bystander).unwrap();
+    assert_still_registered(&repo, "bystander");
+
+    // The entry that was actually targeted is the one that went.
+    let listed = repo
+        .git_command()
+        .args(["worktree", "list", "--porcelain"])
+        .run()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        !listed.contains("branch refs/heads/victim"),
+        "the stale entry should have been pruned\n{listed}"
     );
 }
