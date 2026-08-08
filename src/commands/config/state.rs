@@ -84,6 +84,7 @@ use worktrunk::styling::{
 };
 
 use crate::cli::{OutputFormat, SwitchFormat};
+use crate::output::print_json;
 use crate::output::prompt::{PromptResponse, prompt_yes_no_preview};
 use worktrunk::utils::epoch_now;
 
@@ -634,7 +635,7 @@ pub fn handle_logs_list(format: SwitchFormat) -> anyhow::Result<()> {
             "hook_output": hook_output,
             "diagnostic": diagnostic,
         });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        print_json(&output)?;
         return Ok(());
     }
 
@@ -689,7 +690,7 @@ pub fn handle_logs_profile(file: Option<PathBuf>, format: SwitchFormat) -> anyho
     let profile = worktrunk::trace::Profile::from_entries(&entries);
 
     if format == SwitchFormat::Json {
-        println!("{}", serde_json::to_string_pretty(&profile)?);
+        print_json(&profile)?;
     } else {
         show_help_in_pager(&profile.render_text(&source), true);
     }
@@ -746,7 +747,7 @@ pub fn handle_state_get(
                     }
                     None => serde_json::json!(null),
                 };
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                print_json(&output)?;
             } else {
                 match repo.branch_marker(&branch_name) {
                     Some(marker) => println!("{marker}"),
@@ -804,14 +805,14 @@ pub fn handle_state_get(
                 .and_then(|ci_branch| PrStatus::detect(&repo, &ci_branch, &branch_ref.commit_sha));
 
             if format == SwitchFormat::Json {
-                let ci_provider_override = repo.forge_platform_override();
+                let ci_provider_override = repo.configured_forge_platform();
                 let output = pr_status.as_ref().map(|pr| {
                     super::super::list::json_output::JsonCi::from_pr_status(
                         pr,
                         ci_provider_override.as_deref(),
                     )
                 });
-                println!("{}", serde_json::to_string_pretty(&output)?);
+                print_json(&output)?;
             } else {
                 let ci_status = pr_status
                     .map_or(super::super::list::ci_status::CiStatus::NoCI, |s| {
@@ -1300,7 +1301,7 @@ fn handle_state_show_json(repo: &Repository) -> anyhow::Result<()> {
         "trash": trash,
     });
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    print_json(&output)?;
     Ok(())
 }
 
@@ -1479,7 +1480,7 @@ fn handle_cache_get_json(repo: &Repository) -> anyhow::Result<()> {
         "hints": repo.list_shown_hints(),
     });
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    print_json(&output)?;
     Ok(())
 }
 
@@ -1503,6 +1504,13 @@ fn render_ci_status_section(out: &mut String, repo: &Repository) -> anyhow::Resu
     } else if entries.is_empty() {
         writeln!(out, "{}", format_with_gutter("(no entries)", None))?;
     } else {
+        // The Head column is here to be eyeballed against the branch's current
+        // head, so it abbreviates to the width git uses — `core.abbrev`, the
+        // same width `wt list`'s Commit cell and the statusline print. One
+        // probe covers every row: `short_sha` per entry would be a `git
+        // rev-parse` fork apiece, and a repo with a cache entry per branch
+        // turned this dump from 26 ms into 267 ms at 50 entries.
+        let abbrev = repo.abbrev_len();
         let rows: Vec<Vec<String>> = entries
             .iter()
             .map(|cached| {
@@ -1514,7 +1522,7 @@ fn render_ci_status_section(out: &mut String, repo: &Repository) -> anyhow::Resu
                     None => "none".to_string(),
                 };
                 let age = format_relative_time_short(cached.checked_at as i64);
-                let head: String = cached.head.chars().take(8).collect();
+                let head: String = cached.head.chars().take(abbrev).collect();
                 vec![cached.branch.clone(), status, age, head]
             })
             .collect();
@@ -1683,7 +1691,7 @@ pub fn handle_vars_list(branch: Option<String>, format: SwitchFormat) -> anyhow:
             .into_iter()
             .map(|(k, v)| (k, serde_json::Value::String(v)))
             .collect();
-        println!("{}", serde_json::to_string_pretty(&obj)?);
+        print_json(&obj)?;
     } else if entries.is_empty() {
         eprintln!(
             "{}",

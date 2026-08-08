@@ -7,10 +7,11 @@ When debugging TUI commands like `wt switch` (interactive picker), use the `tmux
 ### 1. Create Test Environment
 
 ```bash
-cargo run -p wt-perf -- setup picker-test
+cargo run -p wt-perf -- setup mixed 5 2 0 --path /tmp/wt-picker-test
 ```
 
-This creates a reproducible test repo at `target/wt-perf/picker-test/` (under the workspace root, reaped by `cargo clean`). `wt-perf setup` also prints the exact path.
+This creates a varied repository with linked worktrees and branch-only rows for
+the picker.
 
 ### 2. Test Interactively
 
@@ -21,7 +22,7 @@ Load the `tmux-cli` skill, then use the `tmux-cli` tool. Install if needed: `uv 
 ```bash
 # Launch shell in test repo
 pane=$(tmux-cli launch "zsh")
-tmux-cli send "cd target/wt-perf/picker-test" --pane=$pane
+tmux-cli send "cd /tmp/wt-picker-test" --pane=$pane
 tmux-cli wait_idle --pane=$pane
 
 # Run with debug logging
@@ -43,7 +44,7 @@ MCP terminals use pseudo-TTY, not real terminals. If tests pass in MCP but users
 ```typescript
 // Create terminal and navigate to test repo
 mcp__node-terminal__terminal_create({ sessionId: "test" })
-mcp__node-terminal__terminal_write({ sessionId: "test", input: "cd target/wt-perf/picker-test" })
+mcp__node-terminal__terminal_write({ sessionId: "test", input: "cd /tmp/wt-picker-test" })
 mcp__node-terminal__terminal_send_key({ sessionId: "test", key: "enter" })
 
 // Run with debug logging
@@ -82,7 +83,9 @@ wt --source -C /path/to/repo switch
 1. Add the subcommand to the `Cli` enum in `src/cli/mod.rs`.
 2. Implement it in `src/commands/` (e.g. `src/commands/mycommand.rs`).
 3. Add an `after_long_help` attribute — it is the source of truth for `docs/content/{command}.md`.
-4. Run `cargo test --test integration test_docs_are_in_sync`. Editing help text also changes the rendered `--help` snapshots, which that test leaves untouched — regenerate them with `cargo insta test --accept -- --test integration "test_help"` (or run the pre-merge hook, which does both).
+4. Run `cargo test --test integration test_docs_are_in_sync`. Editing help text also changes the rendered `--help` snapshots, which that test leaves untouched — regenerate them with `cargo insta test --accept --test integration -- test_help` (or run the pre-merge hook, which does both).
+
+A `--format=json` mode prints its answer to stdout through anstream's `println!`, which drops a `BrokenPipe` write error where std's panics. `crate::output::print_json` is that printer for every surface but `wt switch --format=json`, which emits its single result as one compact line. Anything else a person reads goes through anstream too (`worktrunk::styling::println`), which strips color when stdout isn't a terminal and honors `CLICOLOR_FORCE` as `wt --help` documents. `NO_COLOR` reaches the `wt list` table wherever `print_buffered_table` runs — piped, where color is off regardless, and `--no-progressive` on a terminal, where it now genuinely strips. It does not reach the default terminal rendering: `RenderTarget::detect` hands every tty that didn't ask otherwise to `ProgressiveTable`, which writes to a raw `std::io::stdout()` with each row's escapes already baked in. `crate::output::println_verbatim!` is for the two surfaces whose pipe is a courier rather than the destination, so their escapes are data: the statusline a shell prompt or Claude Code renders, and the `--help-page` document whose escapes the docs pipeline turns into HTML. Neither consumer is ever a tty, so anstream would strip them every time — and no test would catch it, since the suite forces color with `CLICOLOR_FORCE=1`. std's `print!`/`println!` write the command's answer nowhere: they panic on a closed pipe, so `wt … | head -3` dies with exit 101.
 
 ## Branch Argument Conventions
 

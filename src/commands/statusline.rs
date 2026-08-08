@@ -31,6 +31,7 @@ use worktrunk::styling::{
 
 use super::list::{self, CollectOptions, StatuslineSegment, json_output};
 use crate::cli::StatuslineFormat;
+use crate::output::{print_json, println_verbatim};
 
 /// Claude Code context parsed from stdin JSON
 struct ClaudeCodeContext {
@@ -722,8 +723,9 @@ fn format_context_gauge(percentage: f64) -> String {
 
 /// Run the statusline command.
 ///
-/// Output uses `println!` for raw stdout (bypasses anstream color detection).
-/// Shell prompts (PS1) and Claude Code always expect ANSI codes.
+/// Output goes through `println_verbatim!`, which bypasses anstream's color
+/// detection: shell prompts (PS1) and Claude Code always expect ANSI codes,
+/// and neither is a tty from this process's point of view.
 pub fn run(format: StatuslineFormat) -> Result<()> {
     // Statusline runs on every prompt redraw — deprecation warnings on stderr
     // would appear above each prompt.
@@ -844,7 +846,7 @@ pub fn run(format: StatuslineFormat) -> Result<()> {
     let output = fix_dim_after_color_reset(&output);
     let output = truncate_visible(&format!("{reset} {output}"), max_width);
 
-    println!("{}", output);
+    println_verbatim!("{}", output);
 
     Ok(())
 }
@@ -932,10 +934,9 @@ fn run_json() -> Result<()> {
             // report, and resolving it here could reach the network on a
             // fresh clone — this path runs on every prompt redraw.
             let envelope = list::json_v2::envelope_with_items(&repo, None, collected, vec![]);
-            list::print_json(&envelope)
+            print_json(&envelope)
         } else {
-            println!("[]");
-            Ok(())
+            print_json(&serde_json::json!([]))
         }
     };
 
@@ -964,7 +965,7 @@ fn run_json() -> Result<()> {
     }
     // No custom columns: the statusline path never expands `[list.custom-columns]`
     // (prompt hot path; its compact format has no column grid).
-    let ci_provider_override = repo.forge_platform_override();
+    let ci_provider_override = repo.configured_forge_platform();
 
     // Output follows `wt list --format=json`: schema 1 is a bare
     // single-item array, schema 2 a single-item envelope.
@@ -982,7 +983,7 @@ fn run_json() -> Result<()> {
         );
         let envelope =
             list::json_v2::envelope_with_items(&repo, default_branch, collected, vec![json_item]);
-        list::print_json(&envelope)
+        print_json(&envelope)
     } else {
         let repo_metadata = repo.repo_info();
         let json_item = json_output::JsonItem::from_list_item(
@@ -992,7 +993,7 @@ fn run_json() -> Result<()> {
             ci_provider_override.as_deref(),
             &[],
         );
-        list::print_json(&[json_item])
+        print_json(&[json_item])
     }
 }
 

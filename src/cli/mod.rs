@@ -384,7 +384,9 @@ pub(crate) struct SwitchArgs {
     ///
     /// Supports [hook template variables](@/hook.md#template-variables)
     /// (`{{ branch }}`, `{{ worktree_path }}`, etc.) and filters.
-    /// `{{ base }}` and `{{ base_worktree_path }}` require `--create`.
+    /// `{{ base }}` and `{{ base_worktree_path }}` describe the source: the
+    /// selected base with `--create`, or the invoking worktree when switching
+    /// to an existing worktree.
     ///
     /// Especially useful with shell aliases:
     ///
@@ -708,7 +710,7 @@ Typing a gutter sigil filters by row kind: `+` narrows to linked worktrees and `
 4. **remote⇅** — Ahead/behind diff vs upstream tracking branch
 5. **summary** — LLM-generated branch summary; requires `[list] summary = true` and [`commit.generation`](@/config.md#commit)
 6. **pr** — The selected row's PR/MR, for any row whose branch has one
-7. **comments** — The PR/MR's comment thread, fetched from the forge on `--prs` rows
+7. **comments** — The PR/MR's comment thread, fetched from the forge for any row whose branch has one
 
 On narrow previews the tab bar compacts to digits — only the active tab keeps its label — so every `Alt-N` accelerator stays visible.
 
@@ -774,11 +776,11 @@ List all worktrees:
 <!-- wt list -->
 ```console
 $ wt list
-  Branch       Status        HEAD±    main↕     main…±  Remote⇅  Commit    Age   Message
-@ feature-api  +   ↕⇡     +54   -5   ↑4  ↓1  +234  -24   ⇡3      6814f02a  30m   Add API tests
-^ main             ^⇅                                    ⇡1  ⇣1  41ee0834  4d    Merge fix-auth:…
-+ fix-auth         ↕|                ↑2  ↓1   +25  -11     |     b772e68b  5h    Add secure token…
-+ fix-typos        _|                                      |     41ee0834  4d    Merge fix-auth:…
+  Branch       Status        HEAD±    main↕     main…±  Remote⇅  Commit   Age   Message
+@ feature-api  +   ↕⇡     +54   -5   ↑4  ↓1  +234  -24   ⇡3      6814f02  30m   Add API tests
+^ main             ^⇅                                    ⇡1  ⇣1  41ee083  4d    Merge fix-auth: h…
++ fix-auth         ↕|                ↑2  ↓1   +25  -11     |     b772e68  5h    Add secure token…
++ fix-typos        _|                                      |     41ee083  4d    Merge fix-auth: h…
 
 ○ Showing 4 worktrees, 1 with changes, 2 ahead, 1 column hidden
 ```
@@ -788,11 +790,11 @@ Include CI status and LLM summaries:
 <!-- wt list --full -->
 ```console
 $ wt list --full
-  Branch       Status        HEAD±    main↕     main…±  Summary                                                Remote⇅  CI    Commit
-@ feature-api  +   ↕⇡     +54   -5   ↑4  ↓1  +234  -24  Refactor API to REST architecture with middleware       ⇡3      #412  6814f02a
-^ main             ^⇅                                                                                           ⇡1  ⇣1  #     41ee0834
-+ fix-auth         ↕|                ↑2  ↓1   +25  -11  Harden auth with constant-time token validation           |     #408  b772e68b
-+ fix-typos        _|                                                                                             |     #410  41ee0834
+  Branch       Status        HEAD±    main↕     main…±  Summary                                                 Remote⇅  CI    Commit
+@ feature-api  +   ↕⇡     +54   -5   ↑4  ↓1  +234  -24  Refactor API to REST architecture with middleware        ⇡3      #412  6814f02
+^ main             ^⇅                                                                                            ⇡1  ⇣1  #     41ee083
++ fix-auth         ↕|                ↑2  ↓1   +25  -11  Harden auth with constant-time token validation            |     #408  b772e68
++ fix-typos        _|                                                                                              |     #410  41ee083
 
 ○ Showing 4 worktrees, 1 with changes, 2 ahead, 3 columns hidden
 ```
@@ -802,13 +804,13 @@ Include branches that don't have worktrees:
 <!-- wt list --branches --full -->
 ```console
 $ wt list --branches --full
-  Branch       Status        HEAD±    main↕     main…±  Summary                                                Remote⇅  CI    Commit
-@ feature-api  +   ↕⇡     +54   -5   ↑4  ↓1  +234  -24  Refactor API to REST architecture with middleware       ⇡3      #412  6814f02a
-^ main             ^⇅                                                                                           ⇡1  ⇣1  #     41ee0834
-+ fix-auth         ↕|                ↑2  ↓1   +25  -11  Harden auth with constant-time token validation           |     #408  b772e68b
-+ fix-typos        _|                                                                                             |     #410  41ee0834
-/ exp             /↕                 ↑2  ↓1  +137       Explore GraphQL schema and resolvers                                  96379229
-/ wip             /↕                 ↑1  ↓1   +33       Start API documentation                                               b40716dc
+  Branch       Status        HEAD±    main↕     main…±  Summary                                                 Remote⇅  CI    Commit
+@ feature-api  +   ↕⇡     +54   -5   ↑4  ↓1  +234  -24  Refactor API to REST architecture with middleware        ⇡3      #412  6814f02
+^ main             ^⇅                                                                                            ⇡1  ⇣1  #     41ee083
++ fix-auth         ↕|                ↑2  ↓1   +25  -11  Harden auth with constant-time token validation            |     #408  b772e68
++ fix-typos        _|                                                                                              |     #410  41ee083
+/ exp             /↕                 ↑2  ↓1  +137       Explore GraphQL schema and resolvers                                   9637922
+/ wip             /↕                 ↑1  ↓1   +33       Start API documentation                                                b40716d
 
 ○ Showing 4 worktrees, 2 branches, 1 with changes, 4 ahead, 3 columns hidden
 ```
@@ -823,7 +825,7 @@ $ wt list --format=json
 
 | Column | Shows |
 |--------|-------|
-| Branch | Branch name |
+| Branch | Branch name; a detached worktree has none, so it shows its short hash in dim yellow |
 | Status | Compact symbols (see below) |
 | HEAD± | Uncommitted changes: +added -deleted lines |
 | main↕ | Commits ahead/behind default branch |
@@ -834,7 +836,7 @@ $ wt list --format=json
 | Path | Worktree directory |
 | URL | Dev server URL from project config; dimmed if port is not listening |
 | *(custom)* | User-defined [custom columns](#custom-columns) from `[list.custom-columns]` user config [experimental] |
-| Commit | Short hash (8 chars) |
+| Commit | Short hash, abbreviated per `core.abbrev` |
 | Age | Time since last commit |
 | Message | Last commit message (truncated) |
 
@@ -918,7 +920,7 @@ An in-progress git operation, a worktree-location attribute, or a branch with no
 | `⊟` | `worktree.state` `"prunable"` | Prunable (worktree directory missing) |
 | `⊞` | `worktree.state` `"locked"` | Locked worktree |
 | `⚑` | `worktree.state` `"duplicate_branch"` | Branch checked out in more than one worktree, so `wt` resolves it to whichever git lists first; every worktree on the branch is flagged |
-| `⚑` | `worktree.state` `"branch_worktree_mismatch"` | Branch name doesn't match the worktree path |
+| `⚑` | `worktree.state` `"branch_worktree_mismatch"` | Worktree isn't at the path its branch implies — including a detached one, which has no branch to imply a path and so is never at home |
 | `/` | `kind` `"branch"` | Branch without a worktree (no `worktree` object) |
 
 ### Default branch
@@ -1050,6 +1052,11 @@ $ wt list --format=json | jq '.items[] | select(.display.state == "integrated" o
 # Worktrees ahead of upstream (needs pushing)
 $ wt list --format=json | jq '.items[] | select(.upstream.ahead > 0) | .branch'
 ```
+
+A JSON Schema for the envelope is published at
+[worktrunk.dev/schema/list-v2.json](https://worktrunk.dev/schema/list-v2.json).
+It describes what `wt` writes, so a field the absence rule can omit is
+optional there rather than required-and-null.
 
 ### Schema 1
 
@@ -1321,6 +1328,22 @@ To avoid killing work the user did not mean to kill, two guards keep `--reap` co
 - **Discovery is by working directory only.** A process that started in the worktree and later changed directory, or a daemon that reparented to `init`, no longer reports a directory under the worktree and is not found. To reliably reap those, launch them with [`wt step tether`](@/step.md#wt-step-tether), which kills the whole process group when the worktree is removed.
 
 Reaping runs before the worktree directory is touched, so it is independent of foreground/background removal and the `--force` flag. Unix only; on Windows `--reap` is rejected.
+
+## JSON output
+
+`--format=json` prints one object per removal to stdout: `{kind, branch, path, branch_outcome, branch_checked_out_at}` for a worktree, with `pruned` in place of `path` for a branch-only removal.
+
+`branch_outcome` names what happened to the branch, so a caller can tell a deletion the removal declined from one it was never asked to make:
+
+| Value | Meaning |
+|-------|---------|
+| `deleted` | The branch is gone |
+| `deferred` | Handed to the detached background process, whose result this run never sees. `--foreground` never reports it |
+| `not_attempted` | No deletion was tried: a detached worktree, a sibling checkout, or `--no-delete-branch` |
+| `retained_unmerged` | Declined: the branch was not integrated into the target |
+| `retained_checked_out` | Declined: the final topology read found a live worktree with it checked out |
+| `retained_raced` | Refused by the compare-and-swap — the branch moved between the integration check and the delete. Re-read the ref and retry |
+| `retained_failed` | The delete command itself failed |
 
 ## Hooks
 
@@ -2222,6 +2245,36 @@ step.copy-ignored.exclude = [".repo-local-cache/"]
 aliases.deploy = "make deploy BRANCH={{ branch }}"
 ```
 
+#### Matching several repositories with one entry
+
+A key containing `*` matches any run of characters, `/` included, so one entry covers a whole host or namespace — including nested groups. `*` is the only wildcard; every other character, `.` among them, is literal.
+
+```toml
+# Every repository on a self-hosted forge whose hostname carries no brand
+[projects."git.company.example/*"]
+forge.platform = "gitlab"
+
+# Everything under one namespace shares a layout
+[projects."git.company.example/platform/*"]
+worktree-path = ".worktrees/{{ branch | sanitize }}"
+```
+
+Every matching entry applies, least- to most-specific, following the rule above: a more specific entry — `git.company.example/platform/*` over `git.company.example/*` — wins where both set the same setting, while hooks and aliases from every matching entry all run, least-specific first. A literal key is the most specific of all; specificity is the count of non-`*` characters in the key. End a host-wide key with `/*` — a bare `git.company.example*` also covers hosts whose names merely start with that string.
+
+`approved-commands` matches the same way, so a pattern entry approves its commands for every repository it covers. Only a key written by hand is ever a pattern: `wt config approvals add` and the interactive prompt record under the exact identifier, and `wt config approvals clear` removes only that exact entry, leaving a pattern other repositories share intact.
+
+#### Forge platform and hostname
+
+`forge` names the forge for the matched repositories — the user-level counterpart of the project config's [forge platform](@/config.md#forge-platform) block, for a self-hosted host whose name carries no `github`, `gitlab`, or `gitea` for detection to read.
+
+```toml
+[projects."git.company.example/*"]
+forge.platform = "gitlab"                    # or "github", "gitea" (experimental), "azure-devops" (experimental)
+forge.hostname = "api.git.company.example"   # API host, when the remote's own host isn't it
+```
+
+Both fields describe the host rather than the repository, which is why a pattern keyed to a hostname suits them, and why an SSH alias resolved through `~/.ssh/config` — where the name in the remote URL is local to one machine — belongs here rather than in a repository's committed config. A repository's own `[forge]` block still wins over any entry here, field by field: a repository that sets only `platform` still takes a matching entry's `hostname`.
+
 Hooks support all three [hook forms](@/hook.md#hook-forms). A table runs multiple commands concurrently; an array-of-tables pipeline runs steps in sequence. The dotted-key examples below are equivalent to the table forms — TOML treats `projects."github.com/user/repo".post-start.server = "..."` and a `[projects."github.com/user/repo".post-start]` table the same way:
 
 ```toml
@@ -2399,13 +2452,15 @@ url = "http://localhost:{{ branch | hash_port }}"
 
 ## Forge platform
 
-Name the forge explicitly for SSH aliases or self-hosted instances, where it can't be detected from the remote URL:
+The forge is read from the remote's hostname: any host carrying `github`, `gitlab`, or `gitea` anywhere in it, plus the Azure DevOps service domains. Name the forge explicitly for a host carrying none of those, such as a Forgejo instance at `forge.example.com`:
 
 ```toml
 [forge]
 platform = "github"  # or "gitlab", "gitea" (experimental), "azure-devops" (experimental)
 hostname = "github.example.com"  # Example: API host (GHE / self-hosted GitLab)
 ```
+
+When many repositories share one self-hosted host, name it once in user config with a [pattern-keyed `[projects]` entry](@/config.md#user-project-specific-settings) instead of repeating this block in each repo. A repository's own `[forge]` still wins, field by field.
 
 ## Commit-message append [experimental]
 
@@ -2498,6 +2553,7 @@ $ WORKTRUNK_COMMIT__GENERATION__COMMAND="echo 'test: automated commit'" wt merge
 | `XDG_CONFIG_DIRS` | Colon-separated system config directories (default: `/etc/xdg`) |
 | `WORKTRUNK_DIRECTIVE_CD_FILE` | Internal: set by shell wrappers. wt writes a raw path; the wrapper `cd`s to it |
 | `WORKTRUNK_DIRECTIVE_EXEC_FILE` | Internal: set by shell wrappers. wt writes shell commands; the wrapper sources the file |
+| `WORKTRUNK_SHELL_CWD` | Internal: set by wt on alias and hook bodies, so a nested `wt` preserves the user's subdirectory |
 | `WORKTRUNK_SHELL` | Internal: set by shell wrappers to indicate shell type (e.g., `powershell`) |
 | `WORKTRUNK_MAX_CONCURRENT_COMMANDS` | Max parallel git commands (default: 32). Lower if hitting file descriptor limits. |
 | `WORKTRUNK_VERBOSE` | Verbosity level (`0`/`1`/`2`), like `-v`/`-vv` but applied everywhere — including shell completion, which no flag can reach |

@@ -7,6 +7,8 @@ use worktrunk::config::{MergeConfig, UserConfig};
 use worktrunk::git::Repository;
 use worktrunk::styling::{eprintln, info_message};
 
+use crate::output::print_json;
+
 use super::command_approval::approve_commit_template_append;
 use super::command_executor::FailureStrategy;
 use super::commit::{CommitOptions, HookGate};
@@ -429,10 +431,10 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
     });
     if !ff {
         // Create a merge commit on the target branch via commit-tree + update-ref
-        let _ = handle_no_ff_merge(Some(&target_branch), operations, &current_branch)?;
+        handle_no_ff_merge(Some(&target_branch), operations, &current_branch)?;
     } else {
         // Fast-forward push to target branch
-        let _ = handle_push(Some(&target_branch), PushKind::MergeFastForward, operations)?;
+        handle_push(Some(&target_branch), PushKind::MergeFastForward, operations)?;
     }
 
     let removed = finish_after_merge(
@@ -462,7 +464,7 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
             "rebased": rebased,
             "removed": removed,
         });
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        print_json(&output)?;
     }
 
     Ok(())

@@ -21,13 +21,14 @@ use worktrunk::git::remote_ref::{
     RemoteRefProvider, parse_ref_url,
 };
 use worktrunk::git::{
-    GitError, GitRemoteUrl, RefContext, RefType, Repository, SwitchSuggestionCtx,
-    current_or_recover,
+    ForgeKind, GitError, GitRemoteUrl, RefType, Repository, SwitchSuggestionCtx, current_or_recover,
 };
-use worktrunk::shell_exec::{ShellEscapeMode, directive_shell_escape_mode, shell_escape_for};
+use worktrunk::shell_exec::{
+    ShellEscapeMode, directive_shell_escape_mode, shell_cwd, shell_escape_for,
+};
 use worktrunk::styling::{
-    eprintln, format_with_gutter, hint_message, info_message, progress_message, suggest_command,
-    warning_message,
+    eprintln, format_with_gutter, hint_message, info_message, println, progress_message,
+    suggest_command, warning_message,
 };
 
 use super::resolve::{compute_worktree_path, offer_bare_repo_worktree_path_fix};
@@ -54,6 +55,10 @@ struct ResolvedTarget {
     method: CreationMethod,
 }
 
+static GITHUB_PROVIDER: GitHubProvider = GitHubProvider;
+static GITEA_PROVIDER: GiteaProvider = GiteaProvider;
+static AZURE_DEVOPS_PROVIDER: AzureDevOpsProvider = AzureDevOpsProvider;
+
 /// Format PR/MR context for gutter display after fetching.
 ///
 /// Returns two lines for gutter formatting:
@@ -61,35 +66,32 @@ struct ResolvedTarget {
 ///  ┃ Fix authentication bug in login flow (#101)
 ///  ┃ by @alice · open · feature-auth · https://github.com/owner/repo/pull/101
 /// ```
-fn format_ref_context(ctx: &impl RefContext) -> String {
-    let mut status_parts = vec![format!("by @{}", ctx.author()), ctx.state().to_string()];
-    if ctx.draft() {
+fn format_ref_context(info: &RemoteRefInfo) -> String {
+    let mut status_parts = vec![format!("by @{}", info.author), info.state.clone()];
+    if info.draft {
         status_parts.push("draft".to_string());
     }
-    status_parts.push(ctx.source_ref());
+    status_parts.push(info.source_ref());
     let status_line = status_parts.join(" · ");
 
     cformat!(
         "<bold>{}</> ({}{})\n{status_line} · <bright-black>{}</>",
-        ctx.title(),
-        ctx.ref_type().symbol(),
-        ctx.number(),
-        ctx.url()
+        info.title,
+        info.ref_type().symbol(),
+        info.number,
+        info.url
     )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PrProviderChoice {
-    GitHub,
-    Gitea,
-    AzureDevOps,
 }
 
 /// Choose which provider should handle `pr:<number>` resolution.
 ///
 /// Priority:
-/// 1. `forge.platform` config (`github` / `gitea` / `azure-devops`)
-/// 2. Primary remote URL detection (host contains `github`/`gitea`/`dev.azure.com`)
+/// 1. The configured `forge.platform` (`github` / `gitea` / `azure-devops`) —
+///    the repository's own, else a matching user-config `[projects."…"]`
+///    entry, via [`Repository::configured_forge_platform`]
+/// 2. Every configured raw remote, in GitHub > Gitea > Azure DevOps > GitLab
+///    order. [`ForgeKind::from_host`] classifies exact forge labels and Azure
+///    DevOps service-domain suffixes.
 /// 3. CLI auth lookup — if `tea` has a login for this host but `gh` does
 ///    not, pick Gitea; otherwise default to GitHub
 ///
@@ -97,21 +99,18 @@ enum PrProviderChoice {
 /// host (e.g. `git.example.com`) without `tea login add` will see a single
 /// GitHub error (with hint to set `forge.platform = "gitea"`), instead of a
 /// wrapped two-provider error.
-fn choose_pr_provider(repo: &Repository) -> anyhow::Result<PrProviderChoice> {
-    if let Some(platform_raw) = repo
-        .load_project_config()?
-        .and_then(|c| c.forge_platform().map(str::to_string))
-    {
-        let platform = platform_raw.to_ascii_lowercase();
-        match platform.as_str() {
-            "github" => return Ok(PrProviderChoice::GitHub),
-            "gitea" => return Ok(PrProviderChoice::Gitea),
-            "azure-devops" | "azuredevops" => return Ok(PrProviderChoice::AzureDevOps),
-            "gitlab" => {
+fn choose_pr_provider(repo: &Repository) -> anyhow::Result<&'static dyn RemoteRefProvider> {
+    if let Some(platform_raw) = repo.configured_forge_platform() {
+        match platform_raw.to_ascii_lowercase().parse::<ForgeKind>() {
+            Ok(ForgeKind::GitHub) => return Ok(&GITHUB_PROVIDER),
+            Ok(ForgeKind::Gitea) => return Ok(&GITEA_PROVIDER),
+            Ok(ForgeKind::AzureDevOps) => return Ok(&AZURE_DEVOPS_PROVIDER),
+            Ok(ForgeKind::GitLab) => {
                 bail!("forge.platform is set to gitlab; use mr:<number> instead of pr:<number>")
             }
-            _ => bail!(
-                "Invalid forge.platform value `{platform_raw}` in .config/wt.toml; \
+            Err(_) => bail!(
+                "Invalid forge.platform value `{platform_raw}` (from `[forge]` in project \
+                 config or a `[projects]` entry in user config); \
                  expected one of: github, gitlab, gitea, azure-devops"
             ),
         }
@@ -125,17 +124,18 @@ fn choose_pr_provider(repo: &Repository) -> anyhow::Result<PrProviderChoice> {
         .into_iter()
         .filter_map(|(_, url)| GitRemoteUrl::parse(&url))
         .collect();
+    let has_forge = |forge| all_parsed.iter().any(|url| url.forge_kind() == Some(forge));
 
-    if all_parsed.iter().any(|u| u.is_github()) {
-        return Ok(PrProviderChoice::GitHub);
+    if has_forge(ForgeKind::GitHub) {
+        return Ok(&GITHUB_PROVIDER);
     }
-    if all_parsed.iter().any(|u| u.is_gitea()) {
-        return Ok(PrProviderChoice::Gitea);
+    if has_forge(ForgeKind::Gitea) {
+        return Ok(&GITEA_PROVIDER);
     }
-    if all_parsed.iter().any(|u| u.is_azure_devops()) {
-        return Ok(PrProviderChoice::AzureDevOps);
+    if has_forge(ForgeKind::AzureDevOps) {
+        return Ok(&AZURE_DEVOPS_PROVIDER);
     }
-    if all_parsed.iter().any(|u| u.is_gitlab()) {
+    if has_forge(ForgeKind::GitLab) {
         bail!("Detected GitLab remote; use mr:<number> instead of pr:<number>")
     }
 
@@ -151,13 +151,13 @@ fn choose_pr_provider(repo: &Repository) -> anyhow::Result<PrProviderChoice> {
         .and_then(|url| GitRemoteUrl::parse(&url))
         .map(|u| u.host().to_string())
     else {
-        return Ok(PrProviderChoice::GitHub);
+        return Ok(&GITHUB_PROVIDER);
     };
 
     if remote_ref::gitea::is_authed_for(&host) && !remote_ref::github::is_authed_for(&host) {
-        Ok(PrProviderChoice::Gitea)
+        Ok(&GITEA_PROVIDER)
     } else {
-        Ok(PrProviderChoice::GitHub)
+        Ok(&GITHUB_PROVIDER)
     }
 }
 
@@ -175,26 +175,14 @@ fn resolve_pr_target(
         .into());
     }
 
-    match choose_pr_provider(repo)? {
-        PrProviderChoice::GitHub => resolve_remote_ref(repo, &GitHubProvider, number, create, base),
-        PrProviderChoice::Gitea => resolve_remote_ref(repo, &GiteaProvider, number, create, base),
-        PrProviderChoice::AzureDevOps => {
-            resolve_remote_ref(repo, &AzureDevOpsProvider, number, create, base)
-        }
-    }
+    resolve_remote_ref(repo, choose_pr_provider(repo)?, number, create, base)
 }
 
 fn resolve_pr_base(
     repo: &Repository,
     number: u32,
 ) -> anyhow::Result<(String, Option<(String, String)>)> {
-    match choose_pr_provider(repo)? {
-        PrProviderChoice::GitHub => resolve_remote_ref_as_base(repo, &GitHubProvider, number),
-        PrProviderChoice::Gitea => resolve_remote_ref_as_base(repo, &GiteaProvider, number),
-        PrProviderChoice::AzureDevOps => {
-            resolve_remote_ref_as_base(repo, &AzureDevOpsProvider, number)
-        }
-    }
+    resolve_remote_ref_as_base(repo, choose_pr_provider(repo)?, number)
 }
 
 /// Fetch PR/MR info while showing a "still waiting" status.
@@ -1327,6 +1315,11 @@ impl SwitchJsonOutput {
 
 /// Emit the structured `--format=json` result to stdout when requested.
 ///
+/// One compact line rather than [`crate::output::print_json`]'s pretty form —
+/// a switch reports a single result, and a line is what a shell loop reads.
+/// The `println!` is anstream's for the same reason `print_json` uses it: a
+/// consumer that stops reading must not panic the command.
+///
 /// A no-op for `SwitchFormat::Text`.
 fn emit_switch_json(
     format: SwitchFormat,
@@ -1690,13 +1683,17 @@ impl SwitchPipeline<'_> {
         // user's shell won't be in the worktree, and shows the worktree-path
         // hint on first --create (before the shell integration warning).
         //
-        // When the user's CWD has been deleted, `std::env::current_dir()`
-        // fails — fall back to `repo_path()` (the main worktree root).
-        // `current_worktree().root()` resolves against the Repository's
+        // `shell_cwd()` is where the user's shell stands: the process cwd,
+        // unless a parent `wt` passed its own down (an alias or hook body runs
+        // from the worktree root, so a nested switch would otherwise resolve
+        // the user to that root — #3723). When the shell's CWD was already
+        // gone when `wt` started, `startup_cwd()` never captured one and this
+        // reads as absent — fall back to `repo_path()` (the main worktree
+        // root). `current_worktree().root()` resolves against the Repository's
         // discovery path, which is alive even after recovery, but we keep the
         // same fallback for any pathological case where rev-parse fails.
         let fallback_path = repo.repo_path()?.to_path_buf();
-        let cwd = std::env::current_dir().unwrap_or(fallback_path.clone());
+        let cwd = shell_cwd().unwrap_or(fallback_path.clone());
         let source_root = repo.current_worktree().root().unwrap_or(fallback_path);
         let hooks_display_path =
             handle_switch_output(&result, &branch_info, change_dir, Some(&source_root), &cwd)?;
@@ -2181,8 +2178,8 @@ mod tests {
         ]);
 
         assert_eq!(
-            choose_pr_provider(&test.repo).unwrap(),
-            PrProviderChoice::GitHub
+            choose_pr_provider(&test.repo).unwrap().forge_kind(),
+            ForgeKind::GitHub
         );
     }
 
@@ -2198,8 +2195,8 @@ mod tests {
         ]);
 
         assert_eq!(
-            choose_pr_provider(&test.repo).unwrap(),
-            PrProviderChoice::AzureDevOps
+            choose_pr_provider(&test.repo).unwrap().forge_kind(),
+            ForgeKind::AzureDevOps
         );
     }
 
@@ -2209,8 +2206,8 @@ mod tests {
         // preserving the existing error message from `gh`.
         let test = TestRepo::with_initial_commit();
         assert_eq!(
-            choose_pr_provider(&test.repo).unwrap(),
-            PrProviderChoice::GitHub
+            choose_pr_provider(&test.repo).unwrap().forge_kind(),
+            ForgeKind::GitHub
         );
     }
 
@@ -2232,8 +2229,8 @@ mod tests {
         test.write_project_config("[forge]\nplatform = \"azure-devops\"\n");
 
         assert_eq!(
-            choose_pr_provider(&test.repo).unwrap(),
-            PrProviderChoice::AzureDevOps
+            choose_pr_provider(&test.repo).unwrap().forge_kind(),
+            ForgeKind::AzureDevOps
         );
     }
 
@@ -2251,8 +2248,8 @@ mod tests {
         test.write_project_config("[forge]\nplatform = \"github\"\n");
 
         assert_eq!(
-            choose_pr_provider(&test.repo).unwrap(),
-            PrProviderChoice::GitHub
+            choose_pr_provider(&test.repo).unwrap().forge_kind(),
+            ForgeKind::GitHub
         );
     }
 }

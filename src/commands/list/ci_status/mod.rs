@@ -121,7 +121,7 @@ pub(crate) fn non_interactive_cmd(program: &str) -> Cmd {
 /// Check if a CLI tool is available
 ///
 /// On Windows, CreateProcessW (via Cmd) searches PATH for .exe files.
-/// We provide .exe mocks in tests via mock-stub, so this works consistently.
+/// Tests provide `.exe` mocks via `testing::mock_commands`, so this works consistently.
 pub(crate) fn tool_available(tool: &str, args: &[&str]) -> bool {
     Cmd::new(tool)
         .args(args.iter().copied())
@@ -856,6 +856,25 @@ mod tests {
             ..pr.clone()
         };
         assert_snapshot!(error.format_cell(usize::MAX, LinkStyle::Unlinked), @"[33m⚠[0m");
+
+        // A PR or MR without CI still keeps its forge reference
+        let no_ci_pr = PrStatus {
+            ci_status: CiStatus::NoCI,
+            ..pr.clone()
+        };
+        assert_snapshot!(
+            no_ci_pr.format_cell(usize::MAX, LinkStyle::Unlinked),
+            @"[90m#123[0m"
+        );
+        let no_ci_mr = PrStatus {
+            ci_status: CiStatus::NoCI,
+            number: Some(PrRef::mr(7)),
+            ..pr.clone()
+        };
+        assert_snapshot!(
+            no_ci_mr.format_cell(usize::MAX, LinkStyle::Unlinked),
+            @"[90m!7[0m"
+        );
 
         // GitLab sigil
         let mr = PrStatus {

@@ -398,7 +398,11 @@ impl PickerProgressHandler for PickerHandler {
             // filters those (see
             // `folded_pr_reference_filters_under_skims_default_engine`).
             let gutter = item.kind.gutter_glyph();
-            let mut search_base = branch_name.clone();
+            // `display_name`, not `branch_name`: a detached row shows its
+            // abbreviated HEAD in the Branch column, so that's what the user
+            // reads and types. `branch_name`'s `"(detached)"` matches nothing
+            // on screen, and collapses every detached row onto one token.
+            let mut search_base = item.display_name().to_string();
             if !path_str.is_empty() {
                 search_base.push(' ');
                 search_base.push_str(&path_str);
@@ -639,7 +643,10 @@ impl PickerProgressHandler for PickerHandler {
     }
 
     fn stash_warning(&self, line: String) {
-        self.stashed_warnings.lock().unwrap().push(line);
+        let mut warnings = self.stashed_warnings.lock().unwrap();
+        if !warnings.contains(&line) {
+            warnings.push(line);
+        }
     }
 
     fn provide_layout(&self, layout: &crate::commands::list::layout::LayoutConfig) {
@@ -908,9 +915,7 @@ mod tests {
     /// differ: an update for a row the cursor isn't on, while a diff tab shows,
     /// for an unchanged status, or for an `is_priming`-only flip (which the
     /// `pr` / `comments` panes don't draw) repaints the list (`Event::Render`)
-    /// but must not re-run the preview — a re-run resets its scroll. Fast
-    /// producer-site guard for that wiring; the end-to-end path is also covered
-    /// by the PTY test `test_switch_picker_pr_tab_auto_resolves_from_fetching`.
+    /// but must not re-run the preview — a re-run resets its scroll.
     #[test]
     fn on_update_pokes_run_preview_only_when_the_visible_pane_changes() {
         use crate::commands::list::ci_status::{CiSource, CiStatus, PrRef, PrStatus};
@@ -965,7 +970,21 @@ mod tests {
             }
             n
         };
+        // Arm the awaited `(row, mode)` — but first let every background fill
+        // still in flight land, while `awaiting` is a key none of them match.
+        // `on_skeleton` spawns a `LOCAL_GIT_MODES` precompute for this row,
+        // which ends at `PreviewOrchestrator::fill` → `notify_filled` and pokes
+        // the same unlabelled `Event::RunPreview` this oracle counts. (The
+        // `comments` fetch is the other producer in production; on this
+        // no-forge `TestRepo` it fills synchronously through `fill_external`,
+        // so it is never in flight here.) Left in flight, a fill for the one
+        // precompute key a later step also awaits (`WorkingTree`) pokes
+        // legitimately but lands after that step's drain — charged to the *next*
+        // step, which is the flake in #3725. Quiescing before each
+        // `note_awaiting` keeps every counted poke attributable to the
+        // `on_update` under test.
         let await_tab = |mode| {
+            handler.orchestrator.wait_for_idle();
             handler
                 .orchestrator
                 .notifier()
@@ -1561,13 +1580,14 @@ mod tests {
         assert!(!matches("!7", gitlab), "!7 inverse-excludes its own MR row");
     }
 
-    /// `stash_warning` accumulates lines in arrival order so the picker can
-    /// drain them in one shot after skim releases the terminal.
+    /// `stash_warning` accumulates distinct lines in arrival order so refreshes
+    /// and concurrent producers cannot repeat a diagnostic after skim exits.
     #[test]
     fn stash_warning_preserves_order() {
         let (handler, _test, _rx) = make_handler();
         handler.stash_warning("first".into());
         handler.stash_warning("second".into());
+        handler.stash_warning("first".into());
         handler.stash_warning("third".into());
         let stash = handler.stashed_warnings.lock().unwrap();
         assert_eq!(stash.as_slice(), &["first", "second", "third"]);
@@ -1599,11 +1619,14 @@ mod tests {
 
         // Static Summary hint primed for every item at skeleton time.
         for branch in ["alpha", "beta", "gamma"] {
-            assert!(
-                handler
-                    .preview_cache
-                    .contains_key(&(branch.into(), PreviewMode::Summary)),
-                "Summary hint should be filled for {branch} at skeleton time"
+            let key = (branch.to_string(), PreviewMode::Summary);
+            let hint = handler.preview_cache.get(&key).unwrap_or_else(|| {
+                panic!("Summary hint should be filled for {branch} at skeleton time")
+            });
+            assert_eq!(
+                hint.value(),
+                "disabled",
+                "Summary cache should contain the selected hint for {branch}"
             );
         }
 

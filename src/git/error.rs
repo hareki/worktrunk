@@ -36,12 +36,12 @@ use crate::styling::{
 
 /// Platform-specific reference type (PR vs MR).
 ///
-/// Used to unify error handling for GitHub PRs and GitLab MRs.
+/// Used to unify error handling across supported forges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefType {
-    /// GitHub Pull Request
+    /// Pull request (GitHub, Gitea, or Azure DevOps)
     Pr,
-    /// GitLab Merge Request
+    /// GitLab merge request
     Mr,
 }
 
@@ -84,25 +84,6 @@ impl RefType {
     pub fn display(self, number: u32) -> String {
         format!("{} {}{}", self.name(), self.symbol(), number)
     }
-}
-
-/// Common display fields for PR/MR context.
-///
-/// Implemented by both `PrInfo` and `MrInfo` to enable unified formatting.
-pub trait RefContext {
-    fn ref_type(&self) -> RefType;
-    fn number(&self) -> u32;
-    fn title(&self) -> &str;
-    fn author(&self) -> &str;
-    fn state(&self) -> &str;
-    fn draft(&self) -> bool;
-    fn url(&self) -> &str;
-
-    /// The source branch reference for display.
-    ///
-    /// For same-repo PRs/MRs: just the branch name (e.g., `feature-auth`)
-    /// For fork PRs/MRs: `owner:branch` format (e.g., `contributor:feature-fix`)
-    fn source_ref(&self) -> String;
 }
 
 /// Multi-line styled rendering for terminal display.
@@ -404,16 +385,22 @@ pub enum GitError {
     DetachedHead {
         action: Option<String>,
     },
-    /// The worktree is partway through a git operation, so a command that
+    /// A worktree is partway through a git operation, so a command that
     /// rewrites or moves commits (`wt merge`, `wt step rebase`,
     /// `wt step squash`, `wt step push`) refuses to start.
     ///
     /// Carries no operation and offers no remedy: `git status` names which
     /// operation is open and how to finish it, so restating either here only
-    /// adds a line that can drift from what git accepts.
+    /// adds a line that can drift from what git accepts. `branch` is what
+    /// tells the user *where* to run it — the push's target worktree is not
+    /// the one they are standing in, and an unqualified refusal there sends
+    /// them to inspect the wrong tree.
     OperationInProgress {
         /// The action the user asked for ("merge", "rebase").
         action: String,
+        /// Branch whose worktree holds the open operation, when that isn't the
+        /// worktree the command ran in.
+        branch: Option<String>,
     },
     /// The index still holds unresolved conflicts, so a command that stages on
     /// the user's behalf (`wt step commit`, `wt step squash`) refuses to run.
@@ -676,9 +663,19 @@ impl GitError {
                 None => "Not on a branch (detached HEAD)".to_string(),
             },
 
-            GitError::OperationInProgress { action } => {
+            GitError::OperationInProgress {
+                action,
+                branch: None,
+            } => {
                 cformat!("Cannot {action}: a git operation is already in progress")
             }
+
+            GitError::OperationInProgress {
+                action,
+                branch: Some(branch),
+            } => cformat!(
+                "Cannot {action}: a git operation is already in progress in the <bold>{branch}</> worktree"
+            ),
 
             GitError::UnmergedPaths { action, files } => {
                 format!(
