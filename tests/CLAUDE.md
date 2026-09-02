@@ -48,8 +48,10 @@ When `codecov/patch` fails, investigate before declaring ready (the merge gate i
 
 ```bash
 task coverage
-cargo llvm-cov report --show-missing-lines | grep <file>   # authoritative miss list; matches codecov line-for-line
+cargo llvm-cov report --show-missing-lines | grep <file>   # authoritative miss list; same lines codecov counts
 ```
+
+Since cargo-llvm-cov 0.9.0 that column collapses consecutive misses into ranges (`12-18`, not `12, 13, …`), so expand a range before comparing it against a codecov line list.
 
 For each uncovered function, either write a test (integration tests via `assert_cmd_snapshot!` do capture subprocess coverage) or document why it's intentionally untested.
 
@@ -391,7 +393,7 @@ Tests run once. Worktrunk configures no nextest `retries`, and no test re-runs i
 - A kill at the 180s slow-timeout is a duration symptom with two causes, told apart by the durations around it: many stretched durations alongside high machine load is CPU starvation, usually a sibling worktree's concurrent build; one test pinned at the timeout in an otherwise-normal run is a blocked call inside it, usually network. Starvation's only lever here would be nextest `threads-required` bounds on the heavy PTY tests, deliberately unset while these stay rare one-offs: the bound taxes every healthy run, and can't see the sibling build that caused the starvation.
 - A shared channel with more than one producer is an attribution bug. Counting events drained from a channel between steps only measures the step that produced them if nothing *else* can produce them: a background task's event landing after its step's drain is charged to the next step, so the assertion that fails names the wrong step and the wrong cause. The events are usually indistinguishable (skim's `Event::RunPreview` carries no payload), so identity assertions aren't available — quiesce the other producers instead, before the step sequence arms whatever they'd match. `on_update_pokes_run_preview_only_when_the_visible_pane_changes` is the worked example: `PreviewOrchestrator::wait_for_idle()` before each `note_awaiting`, so the skeleton precompute lands while no key matches it.
 - A spawn that fails `NotFound` is a concurrent-build bug. Cargo uplifts `target/debug/wt` by removing the path and recreating it, so a second `cargo` against the same target directory leaves the binary absent for a fraction of a millisecond per rebuild, failing whatever spawn is in flight with `Os { code: 2, kind: NotFound }` — anywhere: an `insta_cmd` snapshot, a PTY wrapper's `wt config shell init`, a hook whose marker file then never appears — and passing on re-run, which is the signature. `wt_bin()` closes the window by spawning a hardlink pinned under `target/debug/wt-test-bin/` instead of the uplifted path (`testing::pin_test_binary`), so route every `wt` spawn through it or a helper that does; `test_wt_spawns_are_pinned` makes a direct `CARGO_BIN_EXE_wt` spawn fail the suite.
-- A shared namespace is a collision bug. **Never `NamedTempFile::new()`** for a file a test needs by name: `tempfile` retries a name collision only when it surfaces as `AlreadyExists`, and on Windows `create_new` against a name already held by a *directory* — or by a file in delete-pending state — comes back `PermissionDenied`, which it hands straight back to the caller. A full suite run leaves the temp directory full of `.tmpXXXXXX` entries (every `TestRepo` makes one), and under that load the call fails ~1% of the time with `Access is denied.` — a panic that has nothing to do with what the test asserts. Take a `TempDir` and give the files fixed names inside it (`worktrunk::testing::directive_files` is the pattern); a directory collision surfaces as `AlreadyExists`, which tempfile retries.
+- A shared namespace is a collision bug. **Never `NamedTempFile::new()`** for a file a test needs by name: `tempfile` retries a name collision only when it surfaces as `AlreadyExists`, and on Windows `create_new` against a name already held by a *directory* — or by a file in delete-pending state — comes back `PermissionDenied`, which it hands straight back to the caller. A full suite run leaves the temp directory full of `.tmpXXXXXX` entries (every `TestRepo` makes one), and under that load the call fails ~1% of the time with `Access is denied.` — a panic that has nothing to do with what the test asserts. Take a `TempDir` and give the files fixed names inside it (`worktrunk::testing::directive_file` is the pattern); a directory collision surfaces as `AlreadyExists`, which tempfile retries.
 
 A bounded poll that rides out one identified `ErrorKind` whose window is understood is itself a root fix, and the doctrine leaves it alone: `pin_test_binary` polls `NotFound` across cargo's uplift window, and `forward_with_etxtbsy_retry` (`src/completion.rs`) polls `ExecutableFileBusy` while a concurrently-forked child holds the just-written script's write fd open. Both fail immediately on any other error, which is what keeps a poll from drifting into a retry.
 
@@ -558,6 +560,40 @@ Assert semantics through state, structured values, and exit status; snapshot
 the pragmatic user experience when the complete rendering is the contract. A
 custom verifier must fail for every violation it claims to check—diagnostic
 `println!` output is not an oracle.
+
+### Guards that scan source text
+
+Several guards read `src/`, or the snapshot corpus, as text rather than
+compiling it: no stray `println!` outside the allowlist, no `eprintln!` that
+resolves to std's macro instead of anstream's, no bare `env!("VERGEN_…")`, no
+`include_str!` of a path the package won't ship, no host path in a `.snap`, and
+nothing but `src/testing/mod.rs` spawning `wt` through `CARGO_BIN_EXE_wt`.
+Each one asserts *absence* over what its walk handed it.
+
+That polarity is what makes the failure mode silent. A file that drops out of
+the walk is indistinguishable from a file with nothing wrong in it: the
+violation it carried is never looked for, `violations` stays empty, and the
+test passes green over less than it claims.
+
+So that walk lives once, in `tests/common/source_scan.rs`, and panics on every
+read rather than skipping; its module docstring carries the rest. Other tests
+recurse through directories for their own reasons, and this is about the ones
+whose assertion is absence. A read that returns early is the shape to look
+for. `Err(_) => return` and `let Ok(..) else { return }` are the obvious two,
+and `entries.flatten()` is the one that hides, because it drops a per-entry
+`io::Error` without looking like a `return` at all.
+
+Each guard also proves its walk reached something, since a walk that reads
+cleanly and yields nothing passes just as green. `visit_files` returns the
+number of files it visited and is `#[must_use]`, so forgetting to answer for
+coverage is a compile error rather than a rule someone has to remember — which
+is what the swallowed reads it replaced had going for them. A guard that
+already asserts something an empty walk cannot satisfy discards the count with
+`let _ =`, and that discard is the claim: its proof is the assertion below it,
+and a count beside it would be a second mechanism for one guarantee.
+
+A guard walking several roots counts per root. A layout change moves one root
+and leaves the others, and an aggregate count survives that.
 
 ### Snapshot env drift: cosmetic vs. a leak
 

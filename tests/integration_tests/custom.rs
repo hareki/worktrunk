@@ -34,6 +34,18 @@ fn mock_bin_dir(name: &str, response: MockResponse) -> TempDir {
     dir
 }
 
+/// Limit PATH to a supported Git executable, excluding every `wt-*` custom
+/// subcommand without bypassing wt's startup requirements.
+fn set_git_only_path(cmd: &mut Command) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    MockConfig::new("git")
+        .version("git version 2.43.0")
+        .write(dir.path());
+    cmd.env("PATH", dir.path())
+        .env("WORKTRUNK_TEST_MOCK_CONFIG_DIR", dir.path());
+    dir
+}
+
 #[test]
 fn custom_subcommand_runs_wt_prefixed_binary_on_path() {
     // `wt wt-test-extcmd-ok` should find `wt-wt-test-extcmd-ok` on PATH.
@@ -84,7 +96,7 @@ fn custom_subcommand_accepts_non_utf8_forwarded_arg() {
 
 #[cfg(unix)]
 #[test]
-fn custom_subcommand_scrubs_retired_directive_and_preserves_split_files() {
+fn custom_subcommand_scrubs_shell_exec_directives_and_preserves_cd() {
     use std::os::unix::fs::PermissionsExt;
     use worktrunk::shell_exec::{
         DIRECTIVE_CD_FILE_ENV_VAR, DIRECTIVE_EXEC_FILE_ENV_VAR, RETIRED_DIRECTIVE_FILE_ENV_VAR,
@@ -130,10 +142,7 @@ printf 'retired=%s\ncd=%s\nexec=%s\n' "${WORKTRUNK_DIRECTIVE_FILE-unset}" "${WOR
         stdout.contains(&format!("cd={}", cd_file.display())),
         "{stdout}"
     );
-    assert!(
-        stdout.contains(&format!("exec={}", exec_file.display())),
-        "{stdout}"
-    );
+    assert!(stdout.contains("exec=unset"), "{stdout}");
     assert_eq!(
         std::fs::read_to_string(&retired_file).unwrap(),
         "",
@@ -144,10 +153,7 @@ printf 'retired=%s\ncd=%s\nexec=%s\n' "${WORKTRUNK_DIRECTIVE_FILE-unset}" "${WOR
 #[test]
 fn custom_subcommand_not_found_prints_clap_error() {
     let mut cmd = wt_command();
-    // Clear PATH so no `wt-*` binaries can be discovered, then add a single
-    // empty dir so `which` has somewhere to look.
-    let empty = TempDir::new().unwrap();
-    cmd.env("PATH", empty.path());
+    let _git_only_path = set_git_only_path(&mut cmd);
     cmd.arg("definitely-not-a-wt-subcommand");
 
     let output = cmd.output().expect("failed to run wt");
@@ -170,8 +176,7 @@ fn custom_subcommand_not_found_prints_clap_error() {
 #[test]
 fn custom_subcommand_typo_suggests_closest_builtin() {
     let mut cmd = wt_command();
-    let empty = TempDir::new().unwrap();
-    cmd.env("PATH", empty.path());
+    let _git_only_path = set_git_only_path(&mut cmd);
     cmd.arg("siwtch"); // typo of `switch`
 
     let output = cmd.output().expect("failed to run wt");
@@ -195,8 +200,7 @@ fn custom_subcommand_nested_suggestion_wins_over_path_lookup() {
     // not on PATH. The nested tip is layered on top of clap's standard
     // unrecognized-subcommand error.
     let mut cmd = wt_command();
-    let empty = TempDir::new().unwrap();
-    cmd.env("PATH", empty.path());
+    let _git_only_path = set_git_only_path(&mut cmd);
     cmd.arg("squash");
 
     let output = cmd.output().expect("failed to run wt");

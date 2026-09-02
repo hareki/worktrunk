@@ -3800,7 +3800,7 @@ cleanup = "echo done"
 /// parent shell via the CD directive file.
 #[rstest]
 fn test_foreground_hook_passes_directive_file(repo: TestRepo) {
-    use crate::common::{configure_directive_files, directive_files, wt_bin};
+    use crate::common::{configure_directive_file, directive_file, wt_bin};
 
     repo.commit("initial");
 
@@ -3823,10 +3823,10 @@ setup = "'{wt_toml}' switch --create hook-created --no-hooks"
 "#,
     ));
 
-    let (cd_path, exec_path, _guard) = directive_files();
+    let (cd_path, _guard) = directive_file();
 
     let mut cmd = repo.wt_command();
-    configure_directive_files(&mut cmd, &cd_path, &exec_path);
+    configure_directive_file(&mut cmd, &cd_path);
     // Run the pre-start hook manually in foreground
     cmd.args(["hook", "pre-start", "setup"]);
     let output = cmd.output().unwrap();
@@ -3982,7 +3982,7 @@ approved-commands = ["echo project-hook"]
 // convention — `<!-- wt hook pre-merge (docs-example) -->` in `src/cli/mod.rs`.
 // ============================================================================
 
-/// `wt hook pre-merge` example for `docs/content/hook.md` — two named
+/// `wt hook pre-merge` example for `docs/src/content/docs/hook.md` — two named
 /// pre-merge hooks (test, lint) running mocked `cargo` commands.
 #[rstest]
 fn test_docs_hook_pre_merge(repo: TestRepo) {

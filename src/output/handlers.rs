@@ -30,7 +30,7 @@ use worktrunk::git::{
     BranchDeletionMode, BranchDeletionOutcome, BranchDeletionResult, RemoveOptions,
     execute_branch_deletion, remove_worktree_with_cleanup, stage_worktree_removal,
 };
-use worktrunk::path::format_path_for_display;
+use worktrunk::path::{canonicalize_with_parents, format_path_for_display};
 use worktrunk::progress::{Progress, format_stats_paren};
 use worktrunk::remove_dir::remove_dir_with_progress;
 use worktrunk::styling::{
@@ -998,10 +998,13 @@ pub(crate) fn resolve_subdir_in_target(
     cwd: &Path,
 ) -> PathBuf {
     if let Some(source_root) = source_root {
-        // Canonicalize both paths to handle symlinks (e.g., /var -> /private/var on macOS)
-        let cwd = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-        let source_root =
-            dunce::canonicalize(source_root).unwrap_or_else(|_| source_root.to_path_buf());
+        // Canonicalize both paths to handle symlinks (e.g., /var -> /private/var
+        // on macOS). Through `canonicalize_with_parents` rather than `dunce`
+        // directly, so a cwd past Windows' 260-character limit is spelled like
+        // the short worktree root containing it — otherwise `strip_prefix` below
+        // fails and the shell silently lands at the target root (#3898).
+        let cwd = canonicalize_with_parents(cwd);
+        let source_root = canonicalize_with_parents(source_root);
         if let Ok(relative) = cwd.strip_prefix(&source_root)
             && !relative.as_os_str().is_empty()
         {
@@ -1093,15 +1096,9 @@ pub fn handle_switch_output(
 /// directory (shell integration not active). This helps users understand where
 /// the command runs.
 ///
-/// When execution will be refused (the conservative EXEC scrub or a retired
-/// wrapper), no `Executing` header is printed — `execute()` emits its own
-/// warning explaining the skip, and a contradictory header would read as a
-/// broken promise.
-pub fn execute_user_command(command: &str, display_path: Option<&Path>) -> anyhow::Result<()> {
-    if super::exec_would_be_refused() {
-        // execute() will emit the refusal warning and return Ok.
-        return super::execute(command);
-    }
+pub fn execute_user_command(argv: &[String], display_path: Option<&Path>) -> anyhow::Result<()> {
+    super::global::print_outdated_execute_wrapper_warning();
+    let command = super::global::format_exec_argv(argv);
 
     // Show what command is being executed (section header + gutter content)
     // Include path when user's shell won't be there (shell integration not active)
@@ -1113,9 +1110,9 @@ pub fn execute_user_command(command: &str, display_path: Option<&Path>) -> anyho
         None => "Executing (--execute):".to_string(),
     };
     eprintln!("{}", progress_message(header));
-    eprintln!("{}", format_bash_with_gutter(command));
+    eprintln!("{}", format_bash_with_gutter(&command));
 
-    super::execute(command)?;
+    super::execute(argv.to_vec())?;
 
     Ok(())
 }
@@ -2043,25 +2040,18 @@ fn remove_removed_worktree_silently(
 ///
 /// Capabilities: optional stdout→stderr redirect for deterministic ordering,
 /// SIGINT/SIGTERM forwarding to child process group, ANSI reset before child
-/// runs, `Cmd` tracing/logging, and directive file control.
+/// runs, `Cmd` tracing/logging, and CD directive control.
 ///
 /// ## Directive files
 ///
 /// `directives` controls whether the child can write shell-integration
-/// directives back to the parent shell. The CD file is always safe to pass
-/// through (raw path, no injection surface); the EXEC file is normally scrubbed
-/// because alias/hook bodies must not inject arbitrary shell into the parent
-/// session — see [`DirectivePassthrough::inherit_from_env_with_exec`] for the
-/// one exception.
+/// directives back to the parent shell. The CD file holds a raw path and is
+/// safe to pass through.
 ///
 /// - `DirectivePassthrough::default()` — scrubs all directive env vars from
 ///   the child. Used by background hooks (outlive the parent shell).
-/// - `DirectivePassthrough::inherit_from_env()` — re-adds CD but scrubs EXEC.
-///   Used by project aliases and foreground hooks, which may emit `cd`
-///   directives but must not be able to inject shell.
-/// - `DirectivePassthrough::inherit_from_env_with_exec()` — also re-adds EXEC.
-///   Used only for user-source aliases, where the alias body is already user-
-///   authored just like a top-level `wt switch --execute` invocation.
+/// - `DirectivePassthrough::inherit_from_env()` — re-adds CD. Used by aliases
+///   and foreground hooks, which may emit `cd` directives.
 ///
 /// ## Stdout routing
 ///
@@ -2142,9 +2132,6 @@ pub fn execute_shell_command(
     if let Some(path) = directives.cd_file {
         cmd = cmd.directive_cd_file(path);
     }
-    if let Some(path) = directives.exec_file {
-        cmd = cmd.directive_exec_file(path);
-    }
 
     cmd.stream()?;
 
@@ -2158,39 +2145,20 @@ pub fn execute_shell_command(
 ///
 /// `Default` (no fields set) scrubs all directive env vars from the child;
 /// [`DirectivePassthrough::inherit_from_env`] reads the current process
-/// environment and re-adds CD only; [`DirectivePassthrough::inherit_from_env_with_exec`]
-/// re-adds CD and EXEC. The EXEC file is only included by the `_with_exec`
-/// variant — every other path scrubs it so alias/hook shell bodies cannot
-/// inject arbitrary shell into the parent session.
+/// environment and re-adds CD.
 #[derive(Debug, Default, Clone)]
 pub struct DirectivePassthrough {
     pub cd_file: Option<std::path::PathBuf>,
-    pub exec_file: Option<std::path::PathBuf>,
 }
 
 impl DirectivePassthrough {
     /// Pass the CD directive file through to the child, reading the current
     /// process environment. Used by project aliases and foreground hooks that
-    /// may legitimately emit a `cd` directive. The EXEC file is deliberately
-    /// omitted — a project-config body could otherwise inject arbitrary shell
-    /// into the parent session.
+    /// may legitimately emit a `cd` directive.
     pub fn inherit_from_env() -> Self {
         use worktrunk::shell_exec::DIRECTIVE_CD_FILE_ENV_VAR;
         Self {
             cd_file: read_directive_env(DIRECTIVE_CD_FILE_ENV_VAR),
-            exec_file: None,
-        }
-    }
-
-    /// Like [`Self::inherit_from_env`] but also passes the EXEC directive
-    /// file through. Used only for user-source aliases: the body lives in the
-    /// user's own config, so a nested `wt --execute` is no different from the
-    /// user typing the same command at the top level. See issue #2101.
-    pub fn inherit_from_env_with_exec() -> Self {
-        use worktrunk::shell_exec::DIRECTIVE_EXEC_FILE_ENV_VAR;
-        Self {
-            exec_file: read_directive_env(DIRECTIVE_EXEC_FILE_ENV_VAR),
-            ..Self::inherit_from_env()
         }
     }
 }
@@ -2547,6 +2515,28 @@ prunable gitdir file points to non-existent location
         let cwd = source.join("apps/gateway");
         let result = resolve_subdir_in_target(&target, Some(&source), &cwd);
         assert_eq!(result, target.join("apps/gateway"));
+    }
+
+    #[test]
+    fn test_resolve_subdir_in_target_subdir_deeper_than_windows_max_path() {
+        // A cwd nested past Windows' 260-character path limit comes back from
+        // `dunce` spelled `\\?\C:\…` while its short worktree root stays `C:\…`,
+        // so `strip_prefix` fails and the shell lands at the target root with no
+        // error rather than at the mirrored subdirectory (#3898). Off Windows
+        // the depth is unremarkable and this just exercises a deep tree.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+
+        let mut relative = PathBuf::from("node_modules");
+        while source.join(&relative).as_os_str().len() < 320 {
+            relative.push("nested-dependency-directory");
+        }
+        std::fs::create_dir_all(source.join(&relative)).unwrap();
+        std::fs::create_dir_all(target.join(&relative)).unwrap();
+
+        let result = resolve_subdir_in_target(&target, Some(&source), &source.join(&relative));
+        assert_eq!(result, target.join(&relative));
     }
 
     #[test]

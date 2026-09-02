@@ -242,7 +242,7 @@ Valid built-in names:
 
 - [2mbranch[0m — The branch name
 - [2mstatus[0m — Git status symbols, plus any user-defined status
-- [2mworking-diff[0m — Uncommitted line changes against [2mHEAD[0m (header [2mHEAD±[0m)
+- [2mworking-diff[0m — Uncommitted line changes against [2mHEAD[0m, including untracked files (header [2mHEAD±[0m)
 - [2mahead-behind[0m — Commits ahead of and behind the default branch (header [2mmain↕[0m)
 - [2mbranch-diff[0m — Line changes against the default branch (header [2mmain…±[0m)
 - [2msummary[0m — An LLM-generated summary of the branch
@@ -520,7 +520,7 @@ Default template:
 [107m [0m 
 [107m [0m [2m[32m"[0m[2m[32m""[0m
 
-[1mAppending to the prompt [experimental][0m
+[1mAppending to the prompt[0m
 
 [2mtemplate-append[0m adds personal conventions to the commit and squash prompts without restating the whole template:
 
@@ -565,7 +565,7 @@ The forge is read from the remote's hostname: any host carrying [2mgithub[0m, 
 
 When many repositories share one self-hosted host, name it once in user config with a pattern-keyed [2m[projects][0m entry instead of repeating this block in each repo. A repository's own [2m[forge][0m still wins, field by field.
 
-[1m[32mCommit-message append [experimental][0m
+[1m[32mCommit-message append[0m
 
 [2mtemplate-append[0m adds project-wide conventions to the LLM commit and squash prompts, shared so every teammate's LLM sees the same style guide:
 
@@ -644,9 +644,7 @@ Override the LLM command in CI to use a mock:
  [2mWORKTRUNK_PROJECT_CONFIG_PATH[0m     Override project config file location (defaults to [2m.config/wt.toml[0m); relative paths resolve from the worktree root 
  [2mXDG_CONFIG_DIRS[0m                   Colon-separated system config directories (default: [2m/etc/xdg[0m)                                                      
  [2mWORKTRUNK_DIRECTIVE_CD_FILE[0m       Internal: set by shell wrappers. wt writes a raw path; the wrapper [2mcd[0ms to it                                       
- [2mWORKTRUNK_DIRECTIVE_EXEC_FILE[0m     Internal: set by shell wrappers. wt writes shell commands; the wrapper sources the file                            
  [2mWORKTRUNK_SHELL_CWD[0m               Internal: set by wt on alias and hook bodies, so a nested [2mwt[0m preserves the user's subdirectory                     
- [2mWORKTRUNK_SHELL[0m                   Internal: set by shell wrappers to indicate shell type (e.g., [2mpowershell[0m)                                          
  [2mWORKTRUNK_COMPLETE_NAME[0m           Internal: set by shell wrappers to the command name completions register under (defaults to the binary name)       
  [2mWORKTRUNK_MAX_CONCURRENT_COMMANDS[0m Max parallel git commands (default: 32). Lower if hitting file descriptor limits.                                  
  [2mWORKTRUNK_VERBOSE[0m                 Verbosity level ([2m0[0m/[2m1[0m/[2m2[0m), like [2m-v[0m/[2m-vv[0m but applied everywhere — including shell completion, which no flag can reach  
