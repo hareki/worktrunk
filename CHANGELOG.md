@@ -1,8 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Codex on Windows: the activity hooks no longer fail on every event**: each hook led with a bare `bash`, which `cmd.exe` resolves to the WSL launcher rather than Git Bash; in a sandboxed session it refuses to start, so every event raised a `Hook failed` banner. Each hook now carries a Windows-only command that runs the same `wt.sh` through a `cmd.exe` shim, which finds Git Bash by path rather than by name. ([#4008](https://github.com/max-sixty/worktrunk/pull/4008), fixes [#4007](https://github.com/max-sixty/worktrunk/issues/4007), thanks @McNultyyy for reporting and diagnosing)
+
 ## 0.76.0
 
 ### Improved
+
+- **Config migration output names its destination**: `wt config update --output <path>` writes the migration artifact to that file instead of applying it in place, and `--output=-` writes it to stdout. Output mode includes project config when run from a linked worktree. (Breaking: `--print` was removed.)
 
 - **`wt switch --execute` takes a program, not a shell string**: `-x` names one program, with everything after `--` passed as literal argv. Worktrunk spawns it as a child rather than running it in your interactive shell, so shell functions and its `cd` no longer reach you. `-x sh -- -c '…'` recovers shell syntax, not functions. (Breaking: existing `-x` strings, plus `WORKTRUNK_DIRECTIVE_EXEC_FILE` and `WORKTRUNK_SHELL`.) ([#3977](https://github.com/max-sixty/worktrunk/pull/3977), closes [#2860](https://github.com/max-sixty/worktrunk/issues/2860), fixes [#3944](https://github.com/max-sixty/worktrunk/issues/3944), thanks @omgreenfield for testing the migration path)
 
