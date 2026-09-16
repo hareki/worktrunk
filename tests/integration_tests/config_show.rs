@@ -2072,9 +2072,12 @@ fn test_deprecated_project_config_silent_in_linked_worktree(
         .iter()
         .find(|hook| hook["source"] == "project" && hook["type"] == "pre-start")
         .expect("linked-worktree project hook should be listed");
+    // The linked-worktree gate silences the warning, not the migration: the
+    // retired name is rewritten before serde parses, here as everywhere, since
+    // nothing would resolve it at render time.
     assert_eq!(
         project_hook["template"],
-        "echo linked-project-hook {{ main_worktree }}"
+        "echo linked-project-hook {{ repo }}"
     );
     assert!(
         !(stderr.contains("Project config")
@@ -2750,6 +2753,55 @@ fn test_opencode_install_treats_empty_config_dir_as_unset(temp_home: TempDir) {
     );
     assert!(
         !run_dir.join("plugins").exists(),
+        "Plugin must not be written relative to the invocation directory"
+    );
+}
+
+/// A relative `$XDG_CONFIG_HOME` is ignored, as the XDG base directory spec
+/// requires, rather than resolved against the invocation directory.
+///
+/// Regression guard for the same shape as the empty `OPENCODE_CONFIG_DIR`
+/// above, one rung down the precedence: `$XDG_CONFIG_HOME` filtered only the
+/// empty string, so `XDG_CONFIG_HOME=relative-config` made the install target
+/// `relative-config/opencode/plugins/worktrunk.ts` — written under whatever
+/// directory `wt` was run from, and read back from there by
+/// `is_plugin_installed()`, so the install reported success while OpenCode
+/// never saw the plugin.
+///
+/// Out-of-process, so `.env()` sets the child's environment and this races
+/// nothing else in the binary.
+#[rstest]
+fn test_opencode_install_ignores_relative_xdg_config_home(temp_home: TempDir) {
+    let run_dir = temp_home.path().join("run-from-here");
+    fs::create_dir_all(&run_dir).unwrap();
+
+    let mut cmd = wt_command();
+    set_temp_home_env(&mut cmd, temp_home.path());
+    cmd.env_remove("OPENCODE_CONFIG_DIR");
+    cmd.env("XDG_CONFIG_HOME", "relative-config");
+    cmd.current_dir(&run_dir);
+    cmd.args(["config", "plugins", "opencode", "install", "--yes"]);
+
+    let output = cmd.output().expect("install command should run");
+    assert!(
+        output.status.success(),
+        "install failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let canonical_home =
+        crate::common::canonicalize(temp_home.path()).unwrap_or_else(|_| temp_home.path().into());
+    // The relative value is discarded, so the `$HOME/.config/opencode` default
+    // applies — the same target the unset case reaches.
+    let plugin_path = canonical_home.join(".config/opencode/plugins/worktrunk.ts");
+    assert!(
+        plugin_path.exists(),
+        "Plugin should fall through to $HOME/.config, but not found at: {}",
+        plugin_path.display(),
+    );
+    assert!(
+        !run_dir.join("relative-config").exists(),
         "Plugin must not be written relative to the invocation directory"
     );
 }
@@ -7124,4 +7176,58 @@ fn test_project_config_path_env_var_half_anchored_errors(repo: TestRepo) {
             "error should explain the rejected form for {value}; stderr:\n{stderr}"
         );
     }
+}
+
+/// A deprecated config whose migration diff `wt config show` renders.
+const DEPRECATED_CONFIG_FOR_DIFF: &str = r#"worktree-path = "../{{ main_worktree }}.{{ branch }}"
+"#;
+
+/// Worktrunk renders its own migration patch, so a user's `diff.external`
+/// program must not be consulted — a broken or interactive one would otherwise
+/// replace or suppress the proposed diff.
+#[rstest]
+fn test_config_show_migration_diff_ignores_external_diff(repo: TestRepo) {
+    fs::write(repo.test_config_path(), DEPRECATED_CONFIG_FOR_DIFF).unwrap();
+
+    let output = repo
+        .wt_command()
+        .args(["config", "show"])
+        // Appended to the hermetic test git config (keys 0 and 1).
+        .env("GIT_CONFIG_COUNT", "3")
+        .env("GIT_CONFIG_KEY_2", "diff.external")
+        .env("GIT_CONFIG_VALUE_2", "wt-nonexistent-external-diff")
+        .output()
+        .unwrap();
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let stdout = raw.ansi_strip();
+    assert!(
+        stdout.contains("Proposed diff:") && stdout.contains("{{ repo }}"),
+        "expected the migration patch, got:\n{stdout}"
+    );
+}
+
+/// A `git diff --no-index` that fails outright must not read as "no changes":
+/// the preview says so instead of silently dropping the patch.
+#[rstest]
+fn test_config_show_reports_failed_migration_diff(repo: TestRepo) {
+    fs::write(repo.test_config_path(), DEPRECATED_CONFIG_FOR_DIFF).unwrap();
+
+    let output = repo
+        .wt_command()
+        .args(["config", "show"])
+        // An unparsable `diff.*` value fails git after option parsing, which
+        // `--no-ext-diff` cannot prevent.
+        .env("GIT_CONFIG_COUNT", "3")
+        .env("GIT_CONFIG_KEY_2", "diff.algorithm")
+        .env("GIT_CONFIG_VALUE_2", "wt-nonexistent-diff-algorithm")
+        .output()
+        .unwrap();
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let stdout = raw.ansi_strip();
+    assert!(
+        stdout.contains("Could not render the proposed diff"),
+        "expected the failure to be reported, got:\n{stdout}"
+    );
 }
