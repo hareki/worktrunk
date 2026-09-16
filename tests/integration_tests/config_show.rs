@@ -2412,9 +2412,9 @@ fn test_config_show_opencode_plugin_outdated(mut repo: TestRepo, temp_home: Temp
 
 #[rstest]
 #[case(None, "Plugin not installed")]
-#[case(Some("// outdated plugin content\n"), "Plugin outdated")]
-#[case(Some(include_str!("../../dev/pi-plugin.ts")), "Plugin installed")]
-fn test_config_show_pi_plugin_status(
+#[case(Some("// outdated hook content\n"), "Plugin outdated")]
+#[case(Some(include_str!("../../dev/omp-hook.ts")), "Plugin installed")]
+fn test_config_show_omp_hook_status(
     mut repo: TestRepo,
     temp_home: TempDir,
     #[case] plugin_content: Option<&str>,
@@ -2435,16 +2435,78 @@ fn test_config_show_pi_plugin_status(
     cmd.args(["config", "show"]).current_dir(repo.root_path());
     set_temp_home_env(&mut cmd, temp_home.path());
     set_xdg_config_path(&mut cmd, temp_home.path());
+    cmd.env("WORKTRUNK_TEST_OMP_INSTALLED", "1");
+    cmd.env("WORKTRUNK_TEST_PI_INSTALLED", "0");
+
+    let output = cmd.output().expect("config show should run");
+    assert!(output.status.success(), "config show failed: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("OH-MY-PI"),
+        "missing oh-my-pi section: {stdout}"
+    );
+    assert!(
+        stdout.contains(expected_status),
+        "missing oh-my-pi status: {stdout}"
+    );
+    // Installed is the one state with nothing to do, so it carries no hint.
+    if expected_status != "Plugin installed" {
+        assert!(
+            stdout.contains("wt config plugins omp install"),
+            "missing oh-my-pi install hint: {stdout}"
+        );
+    }
+}
+
+#[rstest]
+#[case(None, "Plugin not installed")]
+#[case(Some("// outdated extension content\n"), "Plugin outdated")]
+#[case(Some(include_str!("../../dev/pi-extension.ts")), "Plugin installed")]
+fn test_config_show_pi_extension_status(
+    mut repo: TestRepo,
+    temp_home: TempDir,
+    #[case] plugin_content: Option<&str>,
+    #[case] expected_status: &str,
+) {
+    repo.setup_mock_ci_tools_unauthenticated();
+    let plugin_path = temp_home.path().join(".pi/agent/extensions/worktrunk.ts");
+    if let Some(content) = plugin_content {
+        fs::create_dir_all(plugin_path.parent().unwrap()).unwrap();
+        fs::write(&plugin_path, content).unwrap();
+    }
+
+    let global_config_dir = temp_home.path().join(".config").join("worktrunk");
+    fs::create_dir_all(&global_config_dir).unwrap();
+    fs::write(global_config_dir.join("config.toml"), "").unwrap();
+
+    let mut cmd = repo.wt_command();
+    cmd.args(["config", "show"]).current_dir(repo.root_path());
+    set_temp_home_env(&mut cmd, temp_home.path());
+    set_xdg_config_path(&mut cmd, temp_home.path());
     cmd.env("WORKTRUNK_TEST_PI_INSTALLED", "1");
+    // Each Pi-family section renders from its own agent, so pin the other
+    // off rather than leaving it to the developer's PATH.
+    cmd.env("WORKTRUNK_TEST_OMP_INSTALLED", "0");
 
     let output = cmd.output().expect("config show should run");
     assert!(output.status.success(), "config show failed: {output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("PI"), "missing Pi section: {stdout}");
     assert!(
+        !stdout.contains("OH-MY-PI"),
+        "oh-my-pi section should not render: {stdout}"
+    );
+    assert!(
         stdout.contains(expected_status),
         "missing Pi status: {stdout}"
     );
+    // Installed is the one state with nothing to do, so it carries no hint.
+    if expected_status != "Plugin installed" {
+        assert!(
+            stdout.contains("wt config plugins pi install"),
+            "missing Pi install hint: {stdout}"
+        );
+    }
 }
 
 #[rstest]
@@ -2857,17 +2919,17 @@ fn test_opencode_uninstall_prompt_declined(temp_home: TempDir) {
 }
 
 // =============================================================================
-// Pi plugin install/uninstall
+// oh-my-pi hook install/uninstall
 // =============================================================================
 
 #[rstest]
-fn test_pi_install_creates_profile_aware_hook(temp_home: TempDir) {
+fn test_omp_install_creates_profile_aware_hook(temp_home: TempDir) {
     let settings = setup_home_snapshot_settings(&temp_home);
     settings.bind(|| {
         let mut cmd = wt_command();
         set_temp_home_env(&mut cmd, temp_home.path());
         cmd.env("OMP_PROFILE", "research");
-        cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+        cmd.args(["config", "plugins", "omp", "install", "--yes"]);
 
         assert_cmd_snapshot!(cmd);
     });
@@ -2875,19 +2937,19 @@ fn test_pi_install_creates_profile_aware_hook(temp_home: TempDir) {
     let canonical_home =
         crate::common::canonicalize(temp_home.path()).unwrap_or_else(|_| temp_home.path().into());
     let plugin_path = canonical_home.join(".omp/profiles/research/agent/hooks/pre/worktrunk.ts");
-    let content = fs::read_to_string(&plugin_path).expect("Pi hook should be installed");
+    let content = fs::read_to_string(&plugin_path).expect("oh-my-pi hook should be installed");
     assert!(content.contains("agent_start"));
     assert!(content.contains("agent_end"));
     assert!(content.contains("session_shutdown"));
 }
 
 #[rstest]
-fn test_pi_install_honors_agent_dir_override(temp_home: TempDir) {
-    let agent_dir = temp_home.path().join("custom-pi-agent");
+fn test_omp_install_honors_agent_dir_override(temp_home: TempDir) {
+    let agent_dir = temp_home.path().join("custom-omp-agent");
     let mut cmd = wt_command();
     set_temp_home_env(&mut cmd, temp_home.path());
     cmd.env("PI_CODING_AGENT_DIR", &agent_dir);
-    cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+    cmd.args(["config", "plugins", "omp", "install", "--yes"]);
 
     let output = cmd.output().expect("install command should run");
     assert!(
@@ -2900,13 +2962,13 @@ fn test_pi_install_honors_agent_dir_override(temp_home: TempDir) {
 }
 
 #[rstest]
-fn test_pi_named_profile_ignores_agent_dir_override(temp_home: TempDir) {
-    let agent_dir = temp_home.path().join("custom-pi-agent");
+fn test_omp_named_profile_ignores_agent_dir_override(temp_home: TempDir) {
+    let agent_dir = temp_home.path().join("custom-omp-agent");
     let mut cmd = wt_command();
     set_temp_home_env(&mut cmd, temp_home.path());
     cmd.env("OMP_PROFILE", "research");
     cmd.env("PI_CODING_AGENT_DIR", &agent_dir);
-    cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+    cmd.args(["config", "plugins", "omp", "install", "--yes"]);
 
     let output = cmd.output().expect("install command should run");
     assert!(output.status.success(), "install failed: {output:?}");
@@ -2920,13 +2982,13 @@ fn test_pi_named_profile_ignores_agent_dir_override(temp_home: TempDir) {
 }
 
 #[rstest]
-fn test_pi_install_honors_pi_profile_and_config_dir(temp_home: TempDir) {
+fn test_omp_install_honors_profile_and_config_dir(temp_home: TempDir) {
     let mut cmd = wt_command();
     set_temp_home_env(&mut cmd, temp_home.path());
     cmd.env_remove("OMP_PROFILE");
     cmd.env("PI_PROFILE", "research");
     cmd.env("PI_CONFIG_DIR", ".pi-config");
-    cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+    cmd.args(["config", "plugins", "omp", "install", "--yes"]);
 
     let output = cmd.output().expect("install command should run");
     assert!(output.status.success(), "install failed: {output:?}");
@@ -2939,6 +3001,149 @@ fn test_pi_install_honors_pi_profile_and_config_dir(temp_home: TempDir) {
 }
 
 #[rstest]
+fn test_omp_install_is_idempotent(temp_home: TempDir) {
+    for _ in 0..2 {
+        let mut cmd = wt_command();
+        set_temp_home_env(&mut cmd, temp_home.path());
+        cmd.args(["config", "plugins", "omp", "install", "--yes"]);
+        let output = cmd.output().expect("install command should run");
+        assert!(output.status.success(), "install failed: {output:?}");
+    }
+
+    let plugin_path = temp_home.path().join(".omp/agent/hooks/pre/worktrunk.ts");
+    assert_eq!(
+        fs::read_to_string(plugin_path).unwrap(),
+        include_str!("../../dev/omp-hook.ts")
+    );
+}
+
+#[rstest]
+fn test_omp_install_prompt_declined(temp_home: TempDir) {
+    let mut cmd = wt_command();
+    set_temp_home_env(&mut cmd, temp_home.path());
+    cmd.args(["config", "plugins", "omp", "install"]);
+
+    let output = cmd.output().expect("install command should run");
+    assert!(output.status.success(), "install failed: {output:?}");
+    assert!(
+        !temp_home
+            .path()
+            .join(".omp/agent/hooks/pre/worktrunk.ts")
+            .exists()
+    );
+}
+
+#[rstest]
+fn test_omp_uninstall_removes_hook(temp_home: TempDir) {
+    let agent_dir = temp_home.path().join(".omp/agent");
+    let plugin_path = agent_dir.join("hooks/pre/worktrunk.ts");
+    fs::create_dir_all(plugin_path.parent().unwrap()).unwrap();
+    fs::write(&plugin_path, include_str!("../../dev/omp-hook.ts")).unwrap();
+
+    let settings = setup_home_snapshot_settings(&temp_home);
+    settings.bind(|| {
+        let mut cmd = wt_command();
+        set_temp_home_env(&mut cmd, temp_home.path());
+        cmd.args(["config", "plugins", "omp", "uninstall", "--yes"]);
+
+        assert_cmd_snapshot!(cmd);
+    });
+
+    assert!(!plugin_path.exists());
+}
+
+#[rstest]
+fn test_omp_uninstall_missing_is_a_no_op(temp_home: TempDir) {
+    let mut cmd = wt_command();
+    set_temp_home_env(&mut cmd, temp_home.path());
+    cmd.args(["config", "plugins", "omp", "uninstall", "--yes"]);
+
+    let output = cmd.output().expect("uninstall command should run");
+    assert!(output.status.success(), "uninstall failed: {output:?}");
+}
+
+#[rstest]
+fn test_omp_uninstall_prompt_declined(temp_home: TempDir) {
+    let plugin_path = temp_home.path().join(".omp/agent/hooks/pre/worktrunk.ts");
+    fs::create_dir_all(plugin_path.parent().unwrap()).unwrap();
+    fs::write(&plugin_path, include_str!("../../dev/omp-hook.ts")).unwrap();
+
+    let mut cmd = wt_command();
+    set_temp_home_env(&mut cmd, temp_home.path());
+    cmd.args(["config", "plugins", "omp", "uninstall"]);
+
+    let output = cmd.output().expect("uninstall command should run");
+    assert!(output.status.success(), "uninstall failed: {output:?}");
+    assert!(plugin_path.exists());
+}
+
+// =============================================================================
+// Pi extension install/uninstall
+// =============================================================================
+
+#[rstest]
+fn test_pi_install_writes_extension(temp_home: TempDir) {
+    let settings = setup_home_snapshot_settings(&temp_home);
+    settings.bind(|| {
+        let mut cmd = wt_command();
+        set_temp_home_env(&mut cmd, temp_home.path());
+        // `pi install` redirects when only oh-my-pi resolves, so pin both
+        // rather than letting the developer's PATH decide this snapshot.
+        cmd.env("WORKTRUNK_TEST_PI_INSTALLED", "1");
+        cmd.env("WORKTRUNK_TEST_OMP_INSTALLED", "0");
+        cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+
+        assert_cmd_snapshot!(cmd);
+    });
+
+    let canonical_home =
+        crate::common::canonicalize(temp_home.path()).unwrap_or_else(|_| temp_home.path().into());
+    let extension_path = canonical_home.join(".pi/agent/extensions/worktrunk.ts");
+    let content = fs::read_to_string(&extension_path).expect("Pi extension should be installed");
+    assert!(content.contains("@earendil-works/pi-coding-agent"));
+    assert!(content.contains("agent_start"));
+    // `agent_settled`, not `agent_end`: Pi documents the former as the event a
+    // status integration waits for, because it may still auto-retry after the
+    // latter. oh-my-pi's hook API has no equivalent and keeps `agent_end`.
+    assert!(content.contains(r#"pi.on("agent_settled""#));
+    assert!(content.contains("session_shutdown"));
+}
+
+#[rstest]
+fn test_pi_install_honors_agent_dir_override(temp_home: TempDir) {
+    let agent_dir = temp_home.path().join("custom-pi-agent");
+    let mut cmd = wt_command();
+    set_temp_home_env(&mut cmd, temp_home.path());
+    cmd.env("PI_CODING_AGENT_DIR", &agent_dir);
+    cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+
+    let output = cmd.output().expect("install command should run");
+    assert!(output.status.success(), "install failed: {output:?}");
+    assert!(agent_dir.join("extensions/worktrunk.ts").exists());
+}
+
+/// Pi has no profile concept: the oh-my-pi profile variables must not move the
+/// extension into a `profiles/` subtree.
+#[rstest]
+fn test_pi_install_ignores_omp_profile_variables(temp_home: TempDir) {
+    let mut cmd = wt_command();
+    set_temp_home_env(&mut cmd, temp_home.path());
+    cmd.env("OMP_PROFILE", "research");
+    cmd.env("PI_PROFILE", "research");
+    cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+
+    let output = cmd.output().expect("install command should run");
+    assert!(output.status.success(), "install failed: {output:?}");
+    assert!(
+        temp_home
+            .path()
+            .join(".pi/agent/extensions/worktrunk.ts")
+            .exists()
+    );
+    assert!(!temp_home.path().join(".pi/agent/profiles").exists());
+}
+
+#[rstest]
 fn test_pi_install_is_idempotent(temp_home: TempDir) {
     for _ in 0..2 {
         let mut cmd = wt_command();
@@ -2948,10 +3153,70 @@ fn test_pi_install_is_idempotent(temp_home: TempDir) {
         assert!(output.status.success(), "install failed: {output:?}");
     }
 
-    let plugin_path = temp_home.path().join(".omp/agent/hooks/pre/worktrunk.ts");
+    let extension_path = temp_home.path().join(".pi/agent/extensions/worktrunk.ts");
     assert_eq!(
-        fs::read_to_string(plugin_path).unwrap(),
-        include_str!("../../dev/pi-plugin.ts")
+        fs::read_to_string(extension_path).unwrap(),
+        include_str!("../../dev/pi-extension.ts")
+    );
+}
+
+/// `pi install` meant oh-my-pi until the split, and a stray Pi extension has
+/// no surface in `wt config show` — so the command says so itself when only
+/// oh-my-pi is on PATH.
+#[rstest]
+fn test_pi_install_points_at_omp_when_only_omp_is_on_path(temp_home: TempDir) {
+    let settings = setup_home_snapshot_settings(&temp_home);
+    settings.bind(|| {
+        let mut cmd = wt_command();
+        set_temp_home_env(&mut cmd, temp_home.path());
+        cmd.env("WORKTRUNK_TEST_OMP_INSTALLED", "1");
+        cmd.env("WORKTRUNK_TEST_PI_INSTALLED", "0");
+        cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+
+        assert_cmd_snapshot!(cmd);
+    });
+}
+
+/// With Pi itself on PATH the command has nothing to redirect, whatever else
+/// is installed alongside it.
+#[rstest]
+fn test_pi_install_stays_quiet_when_pi_is_on_path(temp_home: TempDir) {
+    let mut cmd = wt_command();
+    set_temp_home_env(&mut cmd, temp_home.path());
+    cmd.env("WORKTRUNK_TEST_OMP_INSTALLED", "1");
+    cmd.env("WORKTRUNK_TEST_PI_INSTALLED", "1");
+    cmd.args(["config", "plugins", "pi", "install", "--yes"]);
+
+    let output = cmd.output().expect("install command should run");
+    assert!(output.status.success(), "install failed: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("wt config plugins omp install"),
+        "unexpected oh-my-pi redirect: {stderr}"
+    );
+}
+
+/// The redirect prints before the install prompt, so the blank line between
+/// them belongs to the prompt. Declined here (no `--yes`, piped stdin → empty),
+/// which is the only path that renders both.
+#[rstest]
+fn test_pi_install_redirect_precedes_the_prompt(temp_home: TempDir) {
+    let settings = setup_home_snapshot_settings(&temp_home);
+    settings.bind(|| {
+        let mut cmd = wt_command();
+        set_temp_home_env(&mut cmd, temp_home.path());
+        cmd.env("WORKTRUNK_TEST_OMP_INSTALLED", "1");
+        cmd.env("WORKTRUNK_TEST_PI_INSTALLED", "0");
+        cmd.args(["config", "plugins", "pi", "install"]);
+
+        assert_cmd_snapshot!(cmd);
+    });
+
+    assert!(
+        !temp_home
+            .path()
+            .join(".pi/agent/extensions/worktrunk.ts")
+            .exists()
     );
 }
 
@@ -2966,17 +3231,16 @@ fn test_pi_install_prompt_declined(temp_home: TempDir) {
     assert!(
         !temp_home
             .path()
-            .join(".omp/agent/hooks/pre/worktrunk.ts")
+            .join(".pi/agent/extensions/worktrunk.ts")
             .exists()
     );
 }
 
 #[rstest]
-fn test_pi_uninstall_removes_hook(temp_home: TempDir) {
-    let agent_dir = temp_home.path().join(".omp/agent");
-    let plugin_path = agent_dir.join("hooks/pre/worktrunk.ts");
-    fs::create_dir_all(plugin_path.parent().unwrap()).unwrap();
-    fs::write(&plugin_path, include_str!("../../dev/pi-plugin.ts")).unwrap();
+fn test_pi_uninstall_removes_extension(temp_home: TempDir) {
+    let extension_path = temp_home.path().join(".pi/agent/extensions/worktrunk.ts");
+    fs::create_dir_all(extension_path.parent().unwrap()).unwrap();
+    fs::write(&extension_path, include_str!("../../dev/pi-extension.ts")).unwrap();
 
     let settings = setup_home_snapshot_settings(&temp_home);
     settings.bind(|| {
@@ -2987,7 +3251,7 @@ fn test_pi_uninstall_removes_hook(temp_home: TempDir) {
         assert_cmd_snapshot!(cmd);
     });
 
-    assert!(!plugin_path.exists());
+    assert!(!extension_path.exists());
 }
 
 #[rstest]
@@ -3000,11 +3264,35 @@ fn test_pi_uninstall_missing_is_a_no_op(temp_home: TempDir) {
     assert!(output.status.success(), "uninstall failed: {output:?}");
 }
 
+/// `pi uninstall` used to remove the oh-my-pi hook, so anyone repeating that
+/// command after the split gets "Plugin not installed" for a hook that is
+/// still there. The hint names the command that removes it.
+#[rstest]
+fn test_pi_uninstall_points_at_omp_when_its_hook_remains(temp_home: TempDir) {
+    let hook_path = temp_home.path().join(".omp/agent/hooks/pre/worktrunk.ts");
+    fs::create_dir_all(hook_path.parent().unwrap()).unwrap();
+    fs::write(&hook_path, include_str!("../../dev/omp-hook.ts")).unwrap();
+
+    let settings = setup_home_snapshot_settings(&temp_home);
+    settings.bind(|| {
+        let mut cmd = wt_command();
+        set_temp_home_env(&mut cmd, temp_home.path());
+        cmd.args(["config", "plugins", "pi", "uninstall", "--yes"]);
+
+        assert_cmd_snapshot!(cmd);
+    });
+
+    assert!(
+        hook_path.exists(),
+        "pi uninstall must not touch the oh-my-pi hook"
+    );
+}
+
 #[rstest]
 fn test_pi_uninstall_prompt_declined(temp_home: TempDir) {
-    let plugin_path = temp_home.path().join(".omp/agent/hooks/pre/worktrunk.ts");
-    fs::create_dir_all(plugin_path.parent().unwrap()).unwrap();
-    fs::write(&plugin_path, include_str!("../../dev/pi-plugin.ts")).unwrap();
+    let extension_path = temp_home.path().join(".pi/agent/extensions/worktrunk.ts");
+    fs::create_dir_all(extension_path.parent().unwrap()).unwrap();
+    fs::write(&extension_path, include_str!("../../dev/pi-extension.ts")).unwrap();
 
     let mut cmd = wt_command();
     set_temp_home_env(&mut cmd, temp_home.path());
@@ -3012,7 +3300,7 @@ fn test_pi_uninstall_prompt_declined(temp_home: TempDir) {
 
     let output = cmd.output().expect("uninstall command should run");
     assert!(output.status.success(), "uninstall failed: {output:?}");
-    assert!(plugin_path.exists());
+    assert!(extension_path.exists());
 }
 
 /// When $SHELL is not set but PSModulePath is, config show should display

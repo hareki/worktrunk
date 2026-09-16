@@ -52,6 +52,8 @@ Behavior changes require doc updates. `src/cli/mod.rs` (`after_long_help` plus c
 
 Per-tool layout and path resolution (Claude/Codex/Gemini), the convention-only Claude manifest, the Codex inline-hooks rationale, the generated plugin-skills mirror, the accepted `wt-switch-create` tradeoff, and `test_plugin_layout_is_consolidated`: `plugins/worktrunk/CLAUDE.md`.
 
+The Pi-family integrations are two commands because they are two agents. `wt config plugins pi` targets Pi (earendil-works/pi), which loads `ExtensionAPI` extensions from `~/.pi/agent/extensions/`; `wt config plugins omp` targets oh-my-pi, which loads `HookAPI` hooks from `~/.omp/agent/hooks/pre/`. Path rules live in `src/commands/config/pi.rs` and `src/commands/config/omp.rs`; the embedded sources are `dev/pi-extension.ts` and `dev/omp-hook.ts`. Neither file is interchangeable — the loaders differ, and so do the config roots (`$PI_CODING_AGENT_DIR` for Pi; `$PI_CONFIG_DIR`, `$OMP_PROFILE`/`$PI_PROFILE`, and `$PI_CODING_AGENT_DIR` for oh-my-pi).
+
 ## Data Safety
 
 Never risk data loss without explicit user consent. A failed command that preserves data beats a "successful" one that silently destroys work.
@@ -180,6 +182,23 @@ Check `Cargo.toml` before hand-rolling a utility:
 | Shell escaping | `shell_escape::unix::escape()` | manual quoting |
 | ANSI colors | `color_print::cformat!()` | raw escape codes |
 | Template var detection | `minijinja::undeclared_variables(false)` | regex/substring on `{{ var }}` |
+
+Delegation extends past utilities to **another tool's own rules** — where zsh
+reads its config, which TOML keys a schema accepts, how MiniJinja scopes a
+template binding. Ask the library; don't re-derive its rule inside `wt`. A
+re-derived rule is correct on the cases that motivated it and drifts silently
+afterwards. Where the library exposes no API that answers the question, keep
+the substitute no larger than the question and say in the code why it exists.
+
+### Don't Defend Improbable Environments
+
+No resolvable home directory, a config directory the user moved out from under
+the tool that owns it — `wt`'s behavior there is the least of that user's
+problems. Take the working environment as a precondition and drop the fallback
+chain rather than carrying code that is maintained forever and exercised by
+nobody. Dropping a fallback still means failing with an error, never
+`.expect()` — see **Error Handling**. Data safety is the exception, and it has
+its own section.
 
 ### Other
 
