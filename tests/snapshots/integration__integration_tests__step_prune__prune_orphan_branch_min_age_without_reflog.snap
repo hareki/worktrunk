@@ -1,10 +1,11 @@
 ---
-source: tests/integration_tests/step_promote.rs
+source: tests/integration_tests/step_prune.rs
 info:
   program: wt
   args:
     - step
-    - promote
+    - prune
+    - "--dry-run"
   env:
     APPDATA: "[TEST_CONFIG_HOME]"
     CLAUDE_CONFIG_DIR: "[TEST_CLAUDE_CONFIG]"
@@ -57,8 +58,8 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
+[2m○[22m [1mcloned[22m (branch only) — same commit as main
+[2m↳[22m [2m1 branch would be removed (dry run)[22m
 
 ----- stderr -----
-[33m▲[39m [33mPromoting creates mismatched worktree state (shown as ⚑ in wt list)[39m
-[2m↳[22m [2mTo restore canonical locations, run [4mwt step promote main[24m[22m
-[32m✓[39m [32mPromoted: main worktree now has [1mfeature[22m; _REPO_.feature now has [1mmain[22m[39m
+[2m○[22m Skipped [1mfetched[22m (younger than 1d)

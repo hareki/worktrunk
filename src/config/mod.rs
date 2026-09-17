@@ -155,8 +155,8 @@ pub fn is_user_project_override_key(key: &str) -> bool {
         .any(|k| k == key)
 }
 
-/// Replace a key's inline-table value with a standard table, carrying the key's
-/// leading decor onto the table header.
+/// Replace a key's inline-table value with a standard table, carrying the line's
+/// comments onto the first header the table writes.
 ///
 /// The key was parsed from `merge = { … }`, so its leaf decor holds whatever
 /// preceded the line — comments, blank lines — plus the space before `=`. A
@@ -165,12 +165,20 @@ pub fn is_user_project_override_key(key: &str) -> bool {
 /// and the user's own comment is what breaks it. Move the prefix to the header
 /// and drop the rest.
 ///
+/// A trailing comment after the closing brace sits in the inline value's own
+/// decor, which `InlineTable::into_table` discards, so it is read from
+/// `existing` before the replacement and lands after the header's `]`. It is
+/// carried only when it holds a comment; bare whitespace there would just trail
+/// the header.
+///
+/// An implicit table with no values of its own writes no header — `toml_edit`
+/// hides it — so both comments go on its first subtable's header instead:
+/// `commit = { generation = { … } }` becomes `[commit.generation]` alone.
+///
 /// Both places that rewrite a table the user wrote inline go through here — the
 /// save-path merge in `user::persistence`, and `ensure_standard_table_parent`
 /// in `deprecation`, which has no choice but to convert because TOML forbids
-/// extending an inline table with a later subtable. The value's own decor (a
-/// trailing comment after the closing brace) is still dropped by
-/// `InlineTable::into_table`.
+/// extending an inline table with a later subtable.
 pub(crate) fn replace_inline_with_table(
     existing: &mut toml_edit::Table,
     key: &str,
@@ -181,8 +189,29 @@ pub(crate) fn replace_inline_with_table(
         .and_then(|k| k.leaf_decor().prefix())
         .filter(|prefix| prefix.as_str() != Some(""))
         .cloned();
-    if let Some(prefix) = prefix {
-        table.decor_mut().set_prefix(prefix);
+    let suffix = existing
+        .get(key)
+        .and_then(|item| item.as_inline_table())
+        .and_then(|inline| inline.decor().suffix())
+        .filter(|suffix| suffix.as_str().is_some_and(|s| s.contains('#')))
+        .cloned();
+    let first_subtable = (table.is_implicit() && table.get_values().is_empty())
+        .then(|| table.iter().find(|(_, item)| item.is_table()))
+        .flatten()
+        .map(|(subtable, _)| subtable.to_owned());
+    let header = match &first_subtable {
+        Some(subtable) => table
+            .get_mut(subtable)
+            .and_then(toml_edit::Item::as_table_mut),
+        None => Some(&mut table),
+    };
+    if let Some(header) = header {
+        if let Some(prefix) = prefix {
+            header.decor_mut().set_prefix(prefix);
+        }
+        if let Some(suffix) = suffix {
+            header.decor_mut().set_suffix(suffix);
+        }
     }
     if let Some(mut key_mut) = existing.key_mut(key) {
         key_mut.leaf_decor_mut().clear();
@@ -242,7 +271,7 @@ pub use project::{
     ProjectForgeConfig, ProjectListConfig, valid_project_config_keys,
 };
 pub use unknown_tree::{
-    UnknownAnalysis, UnknownTree, UnknownWarning, collect_unknown_warnings, compute_unknown_tree,
+    UnknownTree, UnknownWarning, collect_unknown_warnings, compute_unknown_tree,
 };
 pub use user::LoadError;
 pub(crate) use user::project_match::matching_keys as matching_project_keys;
@@ -659,17 +688,11 @@ task2 = "echo 'Task 2 running' > task2.txt"
     }
 
     fn project_warn_tree(contents: &str) -> UnknownTree {
-        compute_unknown_tree::<ProjectConfig>(contents)
-            .warn_tree()
-            .cloned()
-            .unwrap()
+        compute_unknown_tree::<ProjectConfig>(contents).unwrap()
     }
 
     fn user_warn_tree(contents: &str) -> UnknownTree {
-        compute_unknown_tree::<UserConfig>(contents)
-            .warn_tree()
-            .cloned()
-            .unwrap()
+        compute_unknown_tree::<UserConfig>(contents).unwrap()
     }
 
     #[test]
@@ -715,16 +738,8 @@ task2 = "echo 'Task 2 running' > task2.txt"
     #[test]
     fn test_unknown_tree_invalid_toml() {
         let toml = "this is not valid toml {{{";
-        assert!(
-            compute_unknown_tree::<ProjectConfig>(toml)
-                .warn_tree()
-                .is_none()
-        );
-        assert!(
-            compute_unknown_tree::<UserConfig>(toml)
-                .warn_tree()
-                .is_none()
-        );
+        assert!(compute_unknown_tree::<ProjectConfig>(toml).is_none());
+        assert!(compute_unknown_tree::<UserConfig>(toml).is_none());
     }
 
     #[test]

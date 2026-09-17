@@ -51,10 +51,7 @@ fn test_compute_unknown_tree_empty() {
     let content = r#"
 worktree-path = "../{{ main_worktree }}.{{ branch }}"
 "#;
-    let tree = crate::config::compute_unknown_tree::<UserConfig>(content)
-        .warn_tree()
-        .cloned()
-        .unwrap();
+    let tree = crate::config::compute_unknown_tree::<UserConfig>(content).unwrap();
     assert!(tree.is_empty(), "expected no unknowns, got {tree:?}");
 }
 
@@ -66,10 +63,7 @@ worktree-path = "../{{ main_worktree }}.{{ branch }}"
 unknown-key = "value"
 another-unknown = 42
 "#;
-    let tree = crate::config::compute_unknown_tree::<UserConfig>(content)
-        .warn_tree()
-        .cloned()
-        .unwrap();
+    let tree = crate::config::compute_unknown_tree::<UserConfig>(content).unwrap();
     assert!(tree.keys.contains("unknown-key"));
     assert!(tree.keys.contains("another-unknown"));
 }
@@ -101,10 +95,7 @@ run = "npm install"
 [post-switch]
 rename-tab = "echo 'switched'"
 "#;
-    let tree = crate::config::compute_unknown_tree::<UserConfig>(content)
-        .warn_tree()
-        .cloned()
-        .unwrap();
+    let tree = crate::config::compute_unknown_tree::<UserConfig>(content).unwrap();
     assert!(tree.is_empty());
 }
 
@@ -3119,153 +3110,22 @@ stage = "all"
 }
 
 #[test]
-fn test_save_to_existing_file_replaces_non_table_project_entry() {
-    // When an existing file has a non-table value at projects."<id>",
-    // the diff-based merge replaces it with the correct table structure
-    // from the in-memory config. Only reachable via raw file edits.
+fn test_save_to_existing_file_with_type_mismatch_fails_and_leaves_it() {
+    // A file that parses as TOML but not as a config (a hand edit like
+    // `commit = "oops"`, landing after the mutation reloaded it) gives the
+    // merge no config to tell a reset key from an untouched one, so the save
+    // fails rather than rewrite the file.
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.toml");
-    std::fs::write(
-        &config_path,
-        r#"[projects]
-bogus = "not-a-table"
+    let content = "commit = \"oops\"\n";
+    std::fs::write(&config_path, content).unwrap();
 
-[projects."real"]
-worktree-path = "old"
-"#,
-    )
-    .unwrap();
-
-    let mut config = UserConfig::default();
-    config
-        .projects
-        .insert("bogus".to_string(), UserProjectOverrides::default());
-    config.projects.insert(
-        "real".to_string(),
-        UserProjectOverrides {
-            worktree_path: Some("new".to_string()),
-            ..Default::default()
-        },
-    );
-
-    config.save_to(&config_path).unwrap();
-
-    let saved = std::fs::read_to_string(&config_path).unwrap();
-    // The "real" project should be updated
+    let err = UserConfig::default().save_to(&config_path).unwrap_err();
     assert!(
-        saved.contains("worktree-path = \"new\""),
-        "real project not updated: {saved}"
+        err.to_string().contains("Failed to parse config file"),
+        "expected parse error, got: {err}"
     );
-    // The bogus string entry is replaced with a proper (empty) table
-    assert!(
-        !saved.contains("bogus = \"not-a-table\""),
-        "malformed entry should be replaced: {saved}"
-    );
-}
-
-#[test]
-fn test_save_to_existing_file_where_commit_is_scalar() {
-    // When the existing file has `commit` as a scalar (user-edited mistake),
-    // the diff-based merge replaces it with the correct table structure.
-    // Only reachable via raw file edits.
-    let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("config.toml");
-    std::fs::write(&config_path, "commit = \"hand-edited-mistake\"\n").unwrap();
-
-    let config = UserConfig {
-        commit: CommitConfig {
-            stage: None,
-            generation: Some(CommitGenerationConfig {
-                command: Some("llm".to_string()),
-                ..Default::default()
-            }),
-        },
-        ..Default::default()
-    };
-
-    config.save_to(&config_path).unwrap();
-
-    let saved = std::fs::read_to_string(&config_path).unwrap();
-    // The scalar is replaced with a proper table
-    assert!(
-        !saved.contains("\"hand-edited-mistake\""),
-        "malformed entry should be replaced: {saved}"
-    );
-    assert!(
-        saved.contains("command = \"llm\""),
-        "commit generation should be written: {saved}"
-    );
-}
-
-#[test]
-fn test_save_to_existing_file_where_commit_generation_is_scalar() {
-    // When `[commit]` is a valid table but `generation` is a scalar
-    // (raw-edit mistake), the diff-based merge replaces the scalar with
-    // the correct table. Only reachable via raw file edits.
-    let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("config.toml");
-    std::fs::write(
-        &config_path,
-        "[commit]\nstage = \"tracked\"\ngeneration = \"oops\"\n",
-    )
-    .unwrap();
-
-    let config = UserConfig {
-        commit: CommitConfig {
-            stage: Some(StageMode::Tracked),
-            generation: Some(CommitGenerationConfig {
-                command: Some("llm".to_string()),
-                ..Default::default()
-            }),
-        },
-        ..Default::default()
-    };
-
-    config.save_to(&config_path).unwrap();
-
-    let saved = std::fs::read_to_string(&config_path).unwrap();
-    // The scalar generation is replaced with a proper table
-    assert!(
-        !saved.contains("generation = \"oops\""),
-        "malformed generation should be replaced: {saved}"
-    );
-    assert!(
-        saved.contains("command = \"llm\""),
-        "generation command should be written: {saved}"
-    );
-    // The unrelated stage value is preserved
-    assert!(saved.contains("stage = \"tracked\""), "stage lost: {saved}");
-}
-
-#[test]
-fn test_save_to_existing_file_where_projects_is_scalar() {
-    // When the existing file has `projects` as a scalar (raw-edit mistake),
-    // the diff-based merge replaces it with the correct table structure.
-    let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("config.toml");
-    std::fs::write(&config_path, "projects = \"oops\"\n").unwrap();
-
-    let mut config = UserConfig::default();
-    config.projects.insert(
-        "repo".to_string(),
-        UserProjectOverrides {
-            worktree_path: Some("../x".to_string()),
-            ..Default::default()
-        },
-    );
-
-    config.save_to(&config_path).unwrap();
-
-    let saved = std::fs::read_to_string(&config_path).unwrap();
-    // The scalar is replaced with a proper table
-    assert!(
-        !saved.contains("projects = \"oops\""),
-        "malformed projects should be replaced: {saved}"
-    );
-    assert!(
-        saved.contains("worktree-path = \"../x\""),
-        "project worktree-path should be written: {saved}"
-    );
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), content);
 }
 
 #[test]
@@ -3605,7 +3465,7 @@ future-option = true
 #[test]
 fn test_save_to_existing_file_preserves_deeply_nested_unknown_keys() {
     // Unknown keys inside a doubly-nested table (e.g., `[commit.generation]`)
-    // must also survive — the preserve set needs to traverse to the right level.
+    // must also survive — the merge has to keep them at the right level.
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.toml");
     std::fs::write(
@@ -3799,6 +3659,43 @@ fn test_save_to_rewrites_commented_inline_section_as_parseable_toml() {
         saved.contains("future-option = true"),
         "unknown key should survive: {saved}"
     );
+}
+
+#[test]
+fn test_save_to_rewrites_inline_commit_and_projects_without_bare_headers() {
+    // `commit` and `projects` holding only subtables, written inline, become
+    // standard tables when a value inside changes. Like the tables a save
+    // inserts, they write only their subtables' headers, not an empty
+    // `[commit]` or `[projects]` — and the comments on each line move onto the
+    // first header that is written.
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    let original = r#"# why we generate
+commit = { generation = { command = "old" } } # trailing
+
+# per repo
+projects = { "example.com/org/repo" = { worktree-path = "old" } }
+"#;
+    std::fs::write(&config_path, original).unwrap();
+
+    let mut config = UserConfig::load_from_str(original).unwrap();
+    config.commit.generation.as_mut().unwrap().command = Some("new".to_string());
+    config
+        .projects
+        .get_mut("example.com/org/repo")
+        .unwrap()
+        .worktree_path = Some("new".to_string());
+    config.save_to(&config_path).unwrap();
+
+    insta::assert_snapshot!(std::fs::read_to_string(&config_path).unwrap(), @r#"
+    # why we generate
+    [commit.generation] # trailing
+    command = "new"
+
+    # per repo
+    [projects."example.com/org/repo"]
+    worktree-path = "new"
+    "#);
 }
 
 #[test]
