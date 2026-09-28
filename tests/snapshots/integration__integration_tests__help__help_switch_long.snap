@@ -71,7 +71,9 @@ Usage: [1m[36mwt switch[0m [36m[OPTIONS][0m [36m[BRANCH][0m [1m[36m[--
           
           Runs one external program after switching, with full terminal control. Arguments after [1m--[0m go directly to that program without Worktrunk shell parsing. Program lookup and argument decoding follow the operating system. Shell syntax requires an explicit shell, for example [1m-x sh -- -c 'npm install && npm test'[0m. On Windows, shell shims need their extension ([1m-x code.cmd[0m) or an explicit shell such as [1m-x cmd.exe -- /C code[0m.[0m
           
-          Without a branch argument, the interactive picker opens and the command runs against the selected worktree — so [1mwt switch -x claude[0m picks a worktree, then launches Claude Code there. With [1m--no-cd[0m, the program starts in the invoking directory instead.[0m
+          Without a branch argument, the interactive picker opens and the command runs against the selected worktree — so [1mwt switch -x claude[0m picks a worktree, then launches Claude Code there.[0m
+          
+          The program starts in the worktree the switch selected, whether or not your shell follows it there: [1m--no-cd[0m governs only the shell.[0m
           
           Supports ]8;;https://worktrunk.dev/hook/#template-variables\[4mhook template variables]8;;\[0m ([1m{{ branch }}[0m, [1m{{ worktree_path }}[0m, etc.) and filters. [1m{{ base }}[0m and [1m{{ base_worktree_path }}[0m describe the source: the selected base with [1m--create[0m, or the invoking worktree when switching to an existing worktree.[0m
           
@@ -94,7 +96,7 @@ Usage: [1m[36mwt switch[0m [36m[OPTIONS][0m [36m[BRANCH][0m [1m[36m[--
       [1m[36m--no-cd[0m
           Skip directory change after switching[0m
           
-          Hooks still run normally. Useful when hooks handle navigation (e.g., tmux workflows) or for CI/automation. [1m--execute[0m also starts in the invoking directory. Use --cd to override.[0m
+          Hooks still run normally, and an [1m--execute[0m program still starts in the worktree — only your shell stays put, so [1mwt switch feature --no-cd -x code -- .[0m opens the worktree in an editor and leaves your terminal where it was. Useful when hooks handle navigation (e.g., tmux workflows) or for CI/automation. Use --cd to override.[0m
 
   [1m[36m-h[0m, [1m[36m--help[0m
           Print help (see a summary with '-h')
@@ -229,10 +231,11 @@ The filter matches each row's branch, path, and — when it has a PR/MR — the 
 7. [1mpr[0m — The selected row's PR/MR, for any row whose branch has one
 8. [1mcomments[0m — The PR/MR's comment thread, fetched from the forge for any row whose branch has one
 
-The comparison base is the merge-base with the default branch, or with its upstream when the local default branch lags. The picker opens on [1mdiff[0m for local rows and [1mpr[0m for a PR/MR listed by [2m--prs[0m but not available locally. [2mTab[0m and [2mShift-Tab[0m skip tabs without content; [2mAlt-1[0m through [2mAlt-8[0m open any tab directly. After you choose a tab, that choice stays active while you navigate.
+The comparison base is the merge-base with the default branch, or with its upstream when the local default branch lags. The picker opens on [1mdiff[0m for local rows and [1mpr[0m for a PR/MR listed by [2m--prs[0m but not available locally. A tab with no content for the selected row has a dimmed label, and the active tab's label is underlined. [2mTab[0m and [2mShift-Tab[0m skip the dimmed tabs; [2mAlt-1[0m through [2mAlt-8[0m open any tab directly. After you choose a tab, that choice stays active while you navigate.
 
 [1mPager configuration:[0m The preview panel pipes diff output through git's pager. Override in user config:
 
+[107m [0m [2m# ~/.config/worktrunk/config.toml[0m
 [107m [0m [2m[36m[switch.picker][0m
 [107m [0m [2mpager = [0m[2m[32m"delta --paging=never --width=$COLUMNS"[0m
 

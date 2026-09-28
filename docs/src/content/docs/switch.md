@@ -86,9 +86,9 @@ The CI column shows each row's PR/MR CI and review status, the same as [`wt list
 <figure class="demo">
 <picture>
   <source srcset="/assets/docs/dark/wt-switch-picker.gif" media="(prefers-color-scheme: dark)">
-  <img src="/assets/docs/light/wt-switch-picker.gif" alt="wt switch picker demo" width="1600" height="800">
+  <img src="/assets/docs/light/wt-switch-picker.gif" alt="wt switch picker demo" width="1600" height="900">
 </picture>
-<figcaption>Browsing the picker, scrolling a preview, filtering, and selecting</figcaption>
+<figcaption>Alt-p to reveal the CI and summary columns as they fill in, then paging a diff, a PR's comment thread, and the PR itself</figcaption>
 </figure>
 
 **Keybindings:**
@@ -122,11 +122,12 @@ The filter matches each row's branch, path, and — when it has a PR/MR — the 
 7. **pr** — The selected row's PR/MR, for any row whose branch has one
 8. **comments** — The PR/MR's comment thread, fetched from the forge for any row whose branch has one
 
-The comparison base is the merge-base with the default branch, or with its upstream when the local default branch lags. The picker opens on **diff** for local rows and **pr** for a PR/MR listed by `--prs` but not available locally. `Tab` and `Shift-Tab` skip tabs without content; `Alt-1` through `Alt-8` open any tab directly. After you choose a tab, that choice stays active while you navigate.
+The comparison base is the merge-base with the default branch, or with its upstream when the local default branch lags. The picker opens on **diff** for local rows and **pr** for a PR/MR listed by `--prs` but not available locally. A tab with no content for the selected row has a dimmed label, and the active tab's label is underlined. `Tab` and `Shift-Tab` skip the dimmed tabs; `Alt-1` through `Alt-8` open any tab directly. After you choose a tab, that choice stays active while you navigate.
 
 **Pager configuration:** The preview panel pipes diff output through git's pager. Override in user config:
 
 ```toml
+# ~/.config/worktrunk/config.toml
 [switch.picker]
 pager = "delta --paging=never --width=$COLUMNS"
 ```
@@ -205,7 +206,10 @@ Options:
 
           Without a branch argument, the interactive picker opens and the command runs against the
           selected worktree — so wt switch -x claude picks a worktree, then launches Claude Code
-          there. With --no-cd, the program starts in the invoking directory instead.
+          there.
+
+          The program starts in the worktree the switch selected, whether or not your shell follows
+          it there: --no-cd governs only the shell.
 
           Supports hook template variables ({{ branch }}, {{ worktree_path }}, etc.) and filters. {{
           base }} and {{ base_worktree_path }} describe the source: the selected base with --create,
@@ -235,8 +239,10 @@ Options:
       --no-cd
           Skip directory change after switching
 
-          Hooks still run normally. Useful when hooks handle navigation (e.g., tmux workflows) or
-          for CI/automation. --execute also starts in the invoking directory. Use --cd to override.
+          Hooks still run normally, and an --execute program still starts in the worktree — only
+          your shell stays put, so wt switch feature --no-cd -x code -- . opens the worktree in an
+          editor and leaves your terminal where it was. Useful when hooks handle navigation (e.g.,
+          tmux workflows) or for CI/automation. Use --cd to override.
 
   -h, --help
           Print help (see a summary with '-h')
