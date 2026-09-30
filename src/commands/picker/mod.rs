@@ -2199,6 +2199,7 @@ pub fn handle_picker(
             identifier: &identifier,
             create: should_create,
             base: None,
+            path: None,
             clobber: false,
             verify: true,
             yes: false,
