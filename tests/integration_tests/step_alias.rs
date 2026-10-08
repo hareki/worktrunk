@@ -198,6 +198,37 @@ run = "echo got {{ args }}"
     ));
 }
 
+/// `--args=VALUE` can't bind `{{ args }}` — the alias's own positional list
+/// fills that slot — so the token forwards into it rather than vanishing.
+#[rstest]
+fn test_step_alias_args_flag_forwards_to_args(mut repo: TestRepo) {
+    repo.write_project_config(
+        r#"
+[aliases]
+run = "echo got {{ args }}"
+"#,
+    );
+    repo.commit("Add alias config");
+    let feature_path = repo.add_worktree("feature");
+
+    let output = repo
+        .wt_command()
+        .args(["-y", "run", "--args=x", "y"])
+        .current_dir(&feature_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "alias should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("got --args=x y"),
+        "--args=x should reach {{{{ args }}}}, got: {stdout}"
+    );
+}
+
 /// `--` is a literal-forward escape: every later token goes to `{{ args }}`,
 /// so flag-shaped values that would normally bind are passed through verbatim.
 #[rstest]
@@ -972,8 +1003,9 @@ fn test_alias_runs_execute_directly(repo: TestRepo) {
 ///
 /// Regression test for #406: alias execution used to pipe the template
 /// context JSON into each child's stdin, which displaced the tty and broke
-/// `stdin().is_terminal()` guards in interactive commands. Only hooks have a
-/// documented JSON-on-stdin contract; aliases must leave stdin alone.
+/// `stdin().is_terminal()` guards in interactive commands. Hooks no longer
+/// pipe JSON either, so the `"branch"` assertion below pins the rule for
+/// every foreground step rather than a hooks-vs-aliases distinction.
 #[rstest]
 fn test_alias_inherits_stdin(repo: TestRepo) {
     repo.write_test_config(
@@ -1018,7 +1050,7 @@ echo-stdin = "cat"
     // "branch" key) to stdin, so `cat` would have echoed that instead.
     assert!(
         !combined.contains("\"branch\""),
-        "alias stdin should not receive the hook JSON context, \
+        "no foreground step should receive a JSON context on stdin, \
          got stdout={stdout:?} stderr={stderr:?}",
     );
 }
