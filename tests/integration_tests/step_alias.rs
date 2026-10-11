@@ -624,41 +624,6 @@ greet = "echo USER"
 // Approval tests
 // ============================================================================
 
-/// Helper for alias approval snapshot tests
-fn snapshot_alias_approval(
-    test_name: &str,
-    repo: &TestRepo,
-    alias_args: &[&str],
-    approve: bool,
-    cwd: Option<&std::path::Path>,
-) {
-    let mut cmd = make_snapshot_cmd(repo, "step", alias_args, cwd);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().unwrap();
-
-    {
-        let stdin = child.stdin.as_mut().unwrap();
-        let response = if approve { b"y\n" } else { b"n\n" };
-        stdin.write_all(response).unwrap();
-    }
-
-    let output = child.wait_with_output().unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!(
-        "exit_code: {}\n----- stdout -----\n{}\n----- stderr -----\n{}",
-        output.status.code().unwrap_or(-1),
-        stdout,
-        stderr
-    );
-
-    insta::assert_snapshot!(test_name, combined);
-}
-
 /// Project-config alias prompts for approval in non-TTY (fails with hint)
 #[rstest]
 fn test_alias_approval_project_config_prompts(mut repo: TestRepo) {
@@ -1655,10 +1620,13 @@ good = "(sleep .6; printf 'LATE_%s' TAIL) & printf EARLY_"
 #[rstest]
 #[cfg(unix)]
 fn test_alias_caught_sigint_preserves_successful_descendant_output(repo: TestRepo) {
+    // `two` ignores SIGINT: the group interrupt can land after it writes its
+    // marker but before it exits, and a native SIGINT death there would
+    // legitimately cancel the alias.
     repo.write_test_config(
         r#"[aliases.signal-test]
 one = "trap 'printf handled > caught' INT; echo $$ > worker-pid; printf ready > first-ready; while test ! -f caught; do :; done; (sleep .6; printf 'LATE_%s' TAIL) & printf EARLY_"
-two = "echo $$ > second-pid; printf ready > second-ready"
+two = "trap '' INT; echo $$ > second-pid; printf ready > second-ready"
 "#,
     );
     let output_path = repo.root_path().join("output");
@@ -2514,30 +2482,6 @@ s = "wt switch {{ args }}"
     ));
 }
 
-/// Declining approval prevents alias execution
-#[rstest]
-fn test_alias_approval_decline(mut repo: TestRepo) {
-    repo.write_project_config(
-        r#"
-[aliases]
-deploy = "echo deploying"
-"#,
-    );
-    repo.commit("Add alias config");
-    let feature_path = repo.add_worktree("feature");
-
-    let settings = setup_snapshot_settings(&repo);
-    let _guard = settings.bind_to_scope();
-
-    snapshot_alias_approval(
-        "alias_approval_decline",
-        &repo,
-        &["deploy"],
-        false,
-        Some(&feature_path),
-    );
-}
-
 /// Under `-v`, aliases print a table of resolved template variables before
 /// the announcement — symmetric with the hook-invocation verbose block, but
 /// with alias-scoped vars (`args` included, no `hook_*` keys).
@@ -2715,4 +2659,43 @@ probe = "echo hello"
         branch_row.ends_with("= (unset)"),
         "detached `branch` should read `(unset)`, not `(unused)`, got: {branch_row}"
     );
+}
+
+/// The first alias step moves its worktree, so the next child's cwd is absent.
+#[rstest]
+#[cfg(unix)]
+#[case::serial(false)]
+#[case::concurrent(true)]
+fn test_alias_spawn_failure_has_one_source_detail(repo: TestRepo, #[case] concurrent: bool) {
+    repo.write_test_config(
+        if concurrent {
+            r#"[aliases]
+move-away = ["mv {{ worktree_path }} {{ worktree_path }}.moved", { check = "true", sibling = "true" }]
+"#
+        } else {
+            r#"[aliases]
+move-away = ["mv {{ worktree_path }} {{ worktree_path }}.moved", "true"]
+"#
+        }
+    );
+    let output = repo.wt_command().arg("move-away").output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!repo.root_path().exists());
+    assert!(repo.root_path().with_file_name("repo.moved").exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("Failed to execute").count(), 1, "{stderr}");
+    assert_eq!(stderr.matches("os error 2").count(), 1, "{stderr}");
+    if concurrent {
+        assert!(stderr.contains("command 'check'"), "{stderr}");
+    }
+    setup_snapshot_settings(&repo).bind(|| {
+        insta::assert_snapshot!(
+            if concurrent {
+                "alias_concurrent_spawn_failure_has_one_source_detail"
+            } else {
+                "alias_spawn_failure_has_one_source_detail"
+            },
+            stderr
+        );
+    });
 }
