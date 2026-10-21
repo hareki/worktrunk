@@ -143,7 +143,7 @@ use once_cell::sync::OnceCell;
 use anyhow::Context;
 use dunce::canonicalize;
 
-use crate::config::{LoadError, ProjectConfig, ResolvedConfig, UserConfig};
+use crate::config::{LoadError, ProjectConfig, ProjectId, ResolvedConfig, UserConfig};
 
 // Import types from parent module
 use super::{
@@ -258,7 +258,7 @@ pub(super) struct RepoCache {
     /// [`Repository::branch_diff_spec`]. `None` when no default branch resolves.
     pub(super) comparison_base: OnceCell<Option<integration::ComparisonBase>>,
     /// Project identifier derived from remote URL
-    pub(super) project_identifier: OnceCell<String>,
+    pub(super) project_identifier: OnceCell<ProjectId>,
     /// Project config (loaded from .config/wt.toml in main worktree)
     pub(super) project_config: OnceCell<Option<ProjectConfig>>,
     /// CI platform from project config (`forge.platform` / `ci.platform`).
@@ -1308,7 +1308,7 @@ impl Repository {
     pub fn config(&self) -> &ResolvedConfig {
         self.cache.resolved_config.get_or_init(|| {
             let project_id = self.project_identifier().ok();
-            self.user_config().resolved(project_id.as_deref())
+            self.user_config().resolved(project_id.as_ref())
         })
     }
 
@@ -1489,19 +1489,6 @@ impl Repository {
             repo: self,
             name: name.to_string(),
         }
-    }
-
-    /// Get the current branch name, or error if in detached HEAD state.
-    ///
-    /// `action` describes what requires being on a branch (e.g., "merge").
-    pub fn require_current_branch(&self, action: &str) -> anyhow::Result<String> {
-        self.current_worktree().branch()?.ok_or_else(|| {
-            GitError::DetachedHead {
-                action: Some(action.into()),
-                worktree: None,
-            }
-            .into()
-        })
     }
 
     // =========================================================================

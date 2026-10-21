@@ -90,6 +90,40 @@ fn test_bare_repo_list_no_worktrees() {
     });
 }
 
+/// `--path` naming the bare repository itself is refused, even with
+/// `--clobber`, which would otherwise move the repository aside and strand
+/// every worktree's gitfile on the backup.
+#[test]
+fn test_bare_repo_switch_path_rejects_the_repository() {
+    let test = bare_repo_without_worktrees();
+    let bare = test.bare_repo_path();
+
+    let settings = setup_temp_snapshot_settings(test.temp_path());
+    settings.bind(|| {
+        let mut cmd = wt_command();
+        test.configure_wt_cmd(&mut cmd);
+        cmd.args([
+            "switch",
+            "--create",
+            "feature-b",
+            "--clobber",
+            "--path",
+            ".",
+        ])
+        .current_dir(bare);
+
+        assert_cmd_snapshot!(cmd);
+    });
+
+    assert!(bare.join("HEAD").is_file());
+    let siblings: Vec<_> = fs::read_dir(bare.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().contains(".bak."))
+        .collect();
+    assert!(siblings.is_empty(), "unexpected backup: {siblings:?}");
+}
+
 /// `--format json` owes its consumer a payload in the same state: the schema-2
 /// envelope with `items: []`, not an empty stdout that no parser accepts.
 #[test]
@@ -686,6 +720,132 @@ fn test_bare_repo_commands_from_bare_directory() {
 
         assert_cmd_snapshot!(cmd);
     });
+}
+
+/// The bare repository's own directory is no worktree, so `@` there names the
+/// branch HEAD points at. `wt switch @` lands in that branch's worktree, and
+/// `wt step copy-ignored`, whose destination defaults to `@`, copies nothing
+/// into the bare repository.
+#[test]
+fn test_bare_repo_at_from_bare_directory_names_head_branch() {
+    let test = BareRepoTest::new();
+    let main_worktree = test.create_worktree("main", "main");
+    test.commit_in(&main_worktree, "Initial commit");
+    fs::write(main_worktree.join(".gitignore"), "secret\n").unwrap();
+    fs::write(main_worktree.join("secret"), "s\n").unwrap();
+
+    let output = test
+        .wt_command()
+        .args(["switch", "@", "--no-cd", "--yes", "--format=json"])
+        .current_dir(test.bare_repo_path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["branch"], "main");
+    assert_eq!(Path::new(json["path"].as_str().unwrap()), main_worktree);
+
+    let output = test
+        .wt_command()
+        .args(["step", "copy-ignored"])
+        .current_dir(test.bare_repo_path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!test.bare_repo_path().join("secret").exists());
+}
+
+/// From a bare repo's directory, `wt remove` with no argument means `@`, the
+/// worktree of the branch HEAD names. With HEAD on the default branch, both
+/// spellings refuse the same way, and that worktree stays.
+#[test]
+fn test_bare_repo_remove_from_bare_directory_targets_head_branch() {
+    let test = BareRepoTest::new();
+    let main_worktree = test.create_worktree("main", "main");
+    test.commit_in(&main_worktree, "Initial commit");
+    test.create_worktree("feature", "feature");
+
+    let remove = |args: &[&str]| {
+        test.wt_command()
+            .arg("remove")
+            .args(args)
+            .args(["--yes", "--foreground"])
+            .current_dir(test.bare_repo_path())
+            .output()
+            .unwrap()
+    };
+    let no_arg = remove(&[]);
+    let at = remove(&["@"]);
+
+    assert!(!no_arg.status.success());
+    assert_eq!(no_arg.status.code(), at.status.code());
+    assert_eq!(no_arg.stderr, at.stderr);
+    assert!(main_worktree.exists());
+    insta::assert_snapshot!(String::from_utf8_lossy(&no_arg.stderr), @"
+    ✗ Cannot remove the default branch main
+    ");
+}
+
+/// From a bare repo's directory, commands without a selector act on the
+/// worktree of the branch HEAD names, here `feature` rather than the primary
+/// `main`: `wt hook show` lists that worktree's project hooks, and `wt step
+/// squash --show-prompt` previews that worktree's changes.
+#[test]
+fn test_bare_repo_previews_from_bare_directory_use_head_branch() {
+    let test = BareRepoTest::new();
+    let main_worktree = test.create_worktree("main", "main");
+    test.commit_in(&main_worktree, "Initial commit");
+    let feature_worktree = test.create_worktree("feature", "feature");
+    test.commit_in(&feature_worktree, "feature-line");
+    test.run_git_in(
+        test.bare_repo_path(),
+        &["symbolic-ref", "HEAD", "refs/heads/feature"],
+    );
+    test.run_git_in(
+        test.bare_repo_path(),
+        &["config", "worktrunk.default-branch", "main"],
+    );
+    for (worktree, hook) in [
+        (&main_worktree, "main-hook"),
+        (&feature_worktree, "feature-hook"),
+    ] {
+        fs::create_dir_all(worktree.join(".config")).unwrap();
+        fs::write(
+            worktree.join(".config/wt.toml"),
+            format!("pre-commit = \"echo {hook}\"\n"),
+        )
+        .unwrap();
+    }
+
+    let run = |args: &[&str]| {
+        let output = test
+            .wt_command()
+            .args(args)
+            .current_dir(test.bare_repo_path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let hooks = run(&["hook", "show", "--format=json"]);
+    assert!(hooks.contains("feature-hook"), "{hooks}");
+    assert!(!hooks.contains("main-hook"), "{hooks}");
+
+    let prompt = run(&["step", "squash", "main", "--show-prompt"]);
+    assert!(prompt.contains("+feature-line"), "{prompt}");
 }
 
 /// Full merge workflow in a bare repo: create main + feature worktrees, merge

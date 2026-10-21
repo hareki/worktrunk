@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::display::format_relative_time_short;
+use ansi_str::AnsiStr as _;
 use anyhow::{Context, bail};
 use color_print::cformat;
 use dunce::canonicalize;
@@ -22,7 +23,7 @@ use worktrunk::git::{
     ErrorExt, ForgeKind, GitError, GitRemoteUrl, RefType, Repository, ResolvedWorktree, Selector,
     SwitchSuggestionCtx, WorktreeId, branch_tracks_ref, current_or_recover, resolve_input_path,
 };
-use worktrunk::path::format_path_for_display;
+use worktrunk::path::{canonicalize_with_parents, format_path_for_display};
 use worktrunk::shell_exec::{ShellEscapeMode, shell_cwd};
 use worktrunk::styling::{
     eprintln, format_with_gutter, hint_message, info_message, println, progress_message,
@@ -787,6 +788,7 @@ fn validate_worktree_creation(
     path: &Path,
     clobber: bool,
     method: &CreationMethod,
+    from_path_flag: bool,
 ) -> anyhow::Result<bool> {
     // For regular switches without --create, validate branch exists
     if let CreationMethod::Regular {
@@ -846,6 +848,7 @@ fn validate_worktree_creation(
         branch: branch.to_string(),
         path: path.to_path_buf(),
         create: is_create,
+        from_path_flag,
     }
     .into())
 }
@@ -1028,6 +1031,7 @@ fn plan_switch(
     };
 
     // Phase 3: Compute expected path. `--path` replaces the template outright.
+    let from_path_flag = requested_path.is_some();
     let expected_path = match requested_path {
         Some(path) => {
             reject_path_overlapping_worktrees(repo, &path)?;
@@ -1037,8 +1041,14 @@ fn plan_switch(
     };
 
     // Phase 4: Validate we can create at this path
-    let needs_clobber_backup =
-        validate_worktree_creation(repo, &branch, &expected_path, clobber, &method)?;
+    let needs_clobber_backup = validate_worktree_creation(
+        repo,
+        &branch,
+        &expected_path,
+        clobber,
+        &method,
+        from_path_flag,
+    )?;
 
     // Phase 5: Return the plan
     Ok(SwitchPlan::Create {
@@ -1051,8 +1061,8 @@ fn plan_switch(
     })
 }
 
-/// Refuse a `--path` directory that holds a worktree or the repository, or
-/// that sits inside one.
+/// Refuse a `--path` directory that holds a worktree or the repository, that
+/// sits inside one, or that is its git directory.
 ///
 /// Such a directory always exists, so `validate_worktree_creation` would
 /// otherwise offer `--clobber`, which moves it aside: `--path ..` would move
@@ -1061,14 +1071,29 @@ fn plan_switch(
 /// directory that does not exist yet is left alone — nesting a new worktree
 /// inside another is git's call, not a clobber.
 fn reject_path_overlapping_worktrees(repo: &Repository, requested: &Path) -> anyhow::Result<()> {
-    let Ok(requested) = canonicalize(requested) else {
+    if !requested.exists() {
         return Ok(());
-    };
-    let registered = repo.list_worktrees()?.iter().map(|wt| wt.path.as_path());
-    for existing in registered.chain([repo.git_common_dir()]) {
-        let existing = canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    }
+    // The comparison form: `dunce` keeps `\\?\` on a deep Windows path and
+    // drops it from a short root, which `starts_with` reads as unrelated.
+    let requested = canonicalize_with_parents(requested);
+    let registered = repo
+        .list_worktrees()?
+        .iter()
+        .map(|wt| (wt.path.as_path(), true));
+    for (existing, is_worktree) in registered.chain([(repo.git_common_dir(), false)]) {
+        let existing = canonicalize_with_parents(existing);
         if existing == requested {
-            continue;
+            // A worktree at exactly this path is `validate_worktree_creation`'s
+            // to report, naming its branch. The git directory has no such
+            // check; in a bare repository it is the repository itself.
+            if is_worktree {
+                continue;
+            }
+            let requested = format_path_for_display(&requested);
+            bail!(cformat!(
+                "<bold>--path {requested}</> is the repository's git directory; choose a directory outside the repository and its worktrees"
+            ));
         }
         let relation = if existing.starts_with(&requested) {
             "contains"
@@ -1565,7 +1590,7 @@ impl SwitchJsonOutput {
     }
 }
 
-/// Emit the structured `--format=json` result to stdout when requested.
+/// Emit the structured `--format=json` result after synchronous work succeeds.
 ///
 /// One compact line rather than [`crate::output::print_json`]'s pretty form —
 /// a switch reports a single result, and a line is what a shell loop reads.
@@ -1585,6 +1610,13 @@ fn emit_switch_json(
     let json = serde_json::to_string(&json).context("Failed to serialize to JSON")?;
     println!("{json}");
     Ok(())
+}
+
+/// Emit the single failure result for a parsed JSON switch invocation.
+/// Main owns the failure boundary, including errors before pipeline creation.
+pub(crate) fn print_switch_json_error(message: &str) {
+    let payload = serde_json::json!({ "error": message.ansi_strip() });
+    println!("{payload}");
 }
 
 /// Options for the switch command
@@ -1713,7 +1745,7 @@ fn approve_switch_hooks(
     // when the project identifier can't be resolved (the plan ends up empty
     // and `approve` never needs it).
     let project_id = repo.project_identifier().ok();
-    let pid = project_id.as_deref();
+    let pid = project_id.as_ref();
     let project_config = repo.load_project_config()?;
     let mut builder = HookPlanBuilder::new(project_config.as_ref(), config, pid);
     builder.add(
@@ -1815,8 +1847,8 @@ fn capture_switch_source(repo: &Repository, is_recovered: bool) -> (String, Stri
 /// else runs in [`SwitchPipeline::run`] — target resolution, the bare-repo
 /// path-fix offer, pre-switch hooks, source-identity capture, `plan_switch` →
 /// `approve_switch_hooks` → `validate_switch_templates` → `execute_switch` →
-/// output → background hooks → `--execute`. One sequence, so the two entry
-/// points cannot drift. In particular the single `verify` / `yes` pair gates
+/// output → background hooks → `--execute` → JSON result. One sequence, so the
+/// two entry points cannot drift. In particular the single `verify` / `yes` pair gates
 /// every hook, so the picker and the argument path cannot diverge on hook
 /// approval — the picker once auto-approved `pre-switch` hooks because it kept
 /// its own copy of that call.
@@ -1967,14 +1999,9 @@ impl SwitchPipeline<'_> {
         let (result, branch_info) =
             execute_switch(repo, plan, config, yes, hooks_approved, &hook_plan)?;
 
-        // --format=json: write structured result to stdout. All behavior
-        // (hooks, --execute, shell integration) proceeds normally — format only
-        // affects output.
-        emit_switch_json(format, &result, &branch_info)?;
-
         // Early exit for benchmarking time-to-first-output.
         if std::env::var_os("WORKTRUNK_FIRST_OUTPUT").is_some() {
-            return Ok(());
+            return emit_switch_json(format, &result, &branch_info);
         }
 
         // Show success message (temporal locality: immediately after the
@@ -2096,10 +2123,14 @@ impl SwitchPipeline<'_> {
                 &argv,
                 display_paths.execute.as_deref(),
                 &display_paths.execute_dir,
+                format == SwitchFormat::Json,
             )?;
         }
 
-        Ok(())
+        // Reserve stdout for one result after every fallible synchronous step.
+        // A late failure still leaves the worktree in place, but reports no
+        // success document. Detached hooks keep their independent lifecycle.
+        emit_switch_json(format, &result, &branch_info)
     }
 }
 
@@ -2129,7 +2160,7 @@ fn run_switch(
     // Now that we have the repo, we can resolve project-specific config.
     let change_dir = change_dir_flag.unwrap_or_else(|| {
         let project_id = repo.project_identifier().ok();
-        config.resolved(project_id.as_deref()).switch.cd()
+        config.resolved(project_id.as_ref()).switch.cd()
     });
 
     // Build switch suggestion context for enriching error hints with --path/--execute/trailing args.
@@ -2287,7 +2318,7 @@ fn validate_switch_templates(
     }
 
     let project_config = repo.load_project_config()?;
-    let user_hooks = config.hooks(repo.project_identifier().ok().as_deref());
+    let user_hooks = config.hooks(repo.project_identifier().ok().as_ref());
 
     for &hook_type in switch_post_hook_types(plan.is_create()) {
         let user_cfg = user_hooks.get(hook_type);
