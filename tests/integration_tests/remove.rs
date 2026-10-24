@@ -1476,7 +1476,15 @@ exec {real_git} "$@"
         "stderr:\n{stderr}"
     );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json, serde_json::json!([]), "no removal completed: {json}");
+    if boundary == "status" {
+        assert_eq!(json, serde_json::json!([]), "{json}");
+    } else {
+        assert!(!interrupted.exists(), "branch deletion follows removal");
+        let items = json.as_array().unwrap();
+        assert_eq!(items.len(), 1, "{json}");
+        assert_eq!(items[0]["branch"], "interrupted");
+        assert_eq!(items[0]["branch_outcome"], "retained_failed");
+    }
 }
 
 #[rstest]
@@ -3118,28 +3126,34 @@ approved-commands = ["echo 'hook ran' > {}"]
 /// background case is the load-bearing one: it's the default for `wt remove`,
 /// and it stages the worktree by renaming it out from under the user, so a
 /// missing gate there destroys the hook's output rather than refusing.
+/// A refusal must neither report removal nor run post-remove teardown.
 #[rstest]
-#[case::foreground(&["--foreground"])]
-#[case::background(&[])]
+#[case::foreground(&["--foreground"], false)]
+#[case::background(&[], false)]
+#[case::detached_background(&[], true)]
 fn test_pre_remove_hook_dirtying_worktree_blocks_remove(
     mut repo: TestRepo,
     #[case] execution_args: &[&str],
+    #[case] detached: bool,
 ) {
-    let hook = "echo dirty > hook-created.txt";
-    repo.write_project_config(&format!(r#"pre-remove = "{hook}""#));
-    repo.commit("Add config");
-    repo.write_test_approvals(&format!(
-        r#"[projects."../origin"]
-approved-commands = ["{hook}"]
-"#
+    let post_remove_marker = repo.root_path().join("post-remove-ran.txt");
+    repo.write_project_config(&format!(
+        r#"pre-remove = 'echo dirty > hook-created.txt'
+post-remove = 'echo removed > "{}"'
+"#,
+        post_remove_marker.to_slash_lossy(),
     ));
+    repo.commit("Add config");
 
     let worktree_path = repo.add_worktree("feature-hook-dirties");
+    if detached {
+        repo.detach_head_in_worktree("feature-hook-dirties");
+    }
     let output = repo
         .wt_command()
-        .arg("remove")
+        .args(["remove", "--yes", "--format=json"])
         .args(execution_args)
-        .arg("feature-hook-dirties")
+        .arg(&worktree_path)
         .output()
         .unwrap();
 
@@ -3155,6 +3169,15 @@ approved-commands = ["{hook}"]
     assert!(
         worktree_path.join("hook-created.txt").exists(),
         "hook-created file should remain recoverable in the worktree"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json, serde_json::json!([]), "no removal completed");
+    // Post-remove is approved and would run in the surviving primary worktree.
+    // Allow a wrongly scheduled background hook time to create its marker.
+    std::thread::sleep(SLEEP_FOR_ABSENCE_CHECK);
+    assert!(
+        !post_remove_marker.exists(),
+        "post-remove must not run when removal was refused"
     );
 }
 
@@ -5351,6 +5374,39 @@ fn test_remove_json(mut repo: TestRepo) {
     });
 }
 
+/// A branch lock fails deletion after the worktree was already removed.
+/// The partial result must report both facts on foreground and staged removal.
+#[rstest]
+#[case::foreground(true)]
+#[case::background(false)]
+fn test_remove_json_branch_failure_has_partial_result(
+    mut repo: TestRepo,
+    #[case] foreground: bool,
+) {
+    let worktree = repo.add_worktree("feature");
+    fs::write(
+        repo.root_path().join(".git/refs/heads/feature.lock"),
+        "locked",
+    )
+    .unwrap();
+    let mut command = repo.wt_command();
+    command.args(["remove", "feature", "--format=json", "--yes", "--no-hooks"]);
+    if foreground {
+        command.arg("--foreground");
+    }
+    let output = command.output().unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json[0]["branch"], "feature");
+    assert_eq!(json[0]["branch_outcome"], "retained_failed");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("lock"),
+        "{json}"
+    );
+    assert!(!worktree.exists());
+    repo.run_git(&["rev-parse", "--verify", "refs/heads/feature"]);
+}
+
 #[rstest]
 fn test_remove_json_branch_only(repo: TestRepo) {
     repo.commit("initial");
@@ -5374,6 +5430,31 @@ fn test_remove_json_branch_only(repo: TestRepo) {
     assert!(output.status.success());
 
     assert_snapshot!(String::from_utf8_lossy(&output.stdout));
+}
+
+/// Force-delete bypasses integration checks, but must still report a retained
+/// branch when Git refuses its ref transaction.
+#[rstest]
+fn test_remove_json_force_branch_failure(repo: TestRepo) {
+    repo.create_branch("locked-branch");
+    fs::write(
+        repo.root_path().join(".git/refs/heads/locked-branch.lock"),
+        "locked",
+    )
+    .unwrap();
+    let output = repo
+        .wt_command()
+        .args(["remove", "locked-branch", "-D", "--format=json", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result.as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result[0]["branch"], "locked-branch");
+    assert_eq!(result[0]["kind"], "branch_only");
+    assert_eq!(result[0]["branch_outcome"], "retained_failed");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("lock"));
+    repo.run_git(&["rev-parse", "--verify", "refs/heads/locked-branch"]);
 }
 
 /// `--format=json` carries the detached worktree too. The human output names it
