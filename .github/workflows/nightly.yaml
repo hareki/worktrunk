@@ -127,7 +127,7 @@ jobs:
         save-if: false
 
     - name: Install cargo-hack
-      uses: taiki-e/install-action@v2.87.31
+      uses: taiki-e/install-action@v2.88.1
       with:
         tool: cargo-hack
 
@@ -204,7 +204,7 @@ jobs:
       uses: baptiste0928/cargo-install@v3
       with:
         crate: worktrunk
-        version: "=0.80.0"
+        version: "=0.81.0"
 
     - name: "Use fast D: drive for temp files (Windows)"
       if: runner.os == 'Windows'
@@ -290,7 +290,7 @@ jobs:
 
     # cargo-udeps requires nightly. Keep at or above `rust-version` in
     # `Cargo.toml`; see the note on `minimal-versions`' identical pin.
-    - run: rustup override set nightly-2026-08-01
+    - run: rustup override set nightly-2026-10-20
 
     - name: 💰 Cache
       uses: Swatinem/rust-cache@v2
@@ -330,7 +330,7 @@ jobs:
     # whose MSRV exceeds the toolchain, so a stale pin fails the job outright
     # rather than reporting on dependency floors. Bumped by the weekly MSRV
     # pass, with headroom so that isn't every week.
-    - run: rustup override set nightly-2026-08-01
+    - run: rustup override set nightly-2026-10-20
 
     - name: 💰 Cache
       uses: Swatinem/rust-cache@v2
