@@ -2891,7 +2891,7 @@ pub mod tests {
     fn test_do_removal_removes_worktree_and_branch() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("feature");
 
         repo.run_command(&[
@@ -3042,7 +3042,7 @@ pub mod tests {
     fn test_do_removal_removes_detached_worktree() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("detached");
 
         repo.run_command(&[
@@ -3190,7 +3190,7 @@ pub mod tests {
     fn test_do_removal_skips_unapproved_pre_remove_hook() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("feature");
         repo.run_command(&[
             "worktree",
@@ -3204,7 +3204,7 @@ pub mod tests {
         // A `pre-remove` hook in the invoking worktree's `.config/wt.toml` —
         // the config the picker removal resolves against — that would write a
         // marker if it ever ran.
-        let marker_dir = tempfile::tempdir().unwrap();
+        let marker_dir = worktrunk::testing::tempdir().unwrap();
         let marker = marker_dir.path().join("pre-remove-ran");
         fs::create_dir_all(test.path().join(".config")).unwrap();
         fs::write(
@@ -3466,7 +3466,7 @@ pub mod tests {
     fn test_apply_removes_selected_detached_worktree_by_path_token() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let first_path = wt_dir.path().join("detached-one");
         let second_path = wt_dir.path().join("detached-two");
 
@@ -3550,7 +3550,7 @@ pub mod tests {
         // picker prelude primes it at startup.
         let factory_repo = worktrunk::git::Repository::at(test.path()).unwrap();
 
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let doomed_path = wt_dir.path().join("doomed");
         factory_repo
             .run_command(&[
@@ -3970,7 +3970,7 @@ pub mod tests {
     fn test_apply_restores_row_when_removal_fails() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("feature");
         repo.run_command(&[
             "worktree",
@@ -3993,7 +3993,7 @@ pub mod tests {
         // Approve `false` so the hook is selected into the read-only plan and
         // actually runs; an isolated approvals path keeps real config untouched.
         let pid = repo.project_identifier().unwrap();
-        let approvals_dir = tempfile::tempdir().unwrap();
+        let approvals_dir = worktrunk::testing::tempdir().unwrap();
         let approvals_path = approvals_dir.path().join("approvals.toml");
         let mut approvals = Approvals::default();
         approvals
@@ -4071,7 +4071,7 @@ pub mod tests {
 
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("feature");
         repo.run_command(&[
             "worktree",
@@ -4165,7 +4165,7 @@ pub mod tests {
     fn test_apply_drops_morphed_row_when_pre_remove_hook_integrates_branch() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("feature");
         repo.run_command(&[
             "worktree",
@@ -4197,7 +4197,7 @@ pub mod tests {
         .unwrap();
 
         let pid = repo.project_identifier().unwrap();
-        let approvals_dir = tempfile::tempdir().unwrap();
+        let approvals_dir = worktrunk::testing::tempdir().unwrap();
         let approvals_path = approvals_dir.path().join("approvals.toml");
         let mut approvals = Approvals::default();
         approvals
@@ -4260,7 +4260,7 @@ pub mod tests {
     fn test_apply_drops_unmorphable_kept_branch_row() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("feature");
         repo.run_command(&[
             "worktree",
@@ -4326,7 +4326,7 @@ pub mod tests {
     fn test_apply_drops_integrated_worktree_row() {
         let test = worktrunk::testing::TestRepo::with_initial_commit();
         let repo = worktrunk::git::Repository::at(test.path()).unwrap();
-        let wt_dir = tempfile::tempdir().unwrap();
+        let wt_dir = worktrunk::testing::tempdir().unwrap();
         let wt_path = wt_dir.path().join("feature");
         // No extra commit → `feature` sits at main's commit (integrated), so
         // SafeDelete deletes the branch along with the worktree.
